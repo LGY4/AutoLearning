@@ -1,0 +1,146 @@
+from __future__ import annotations
+"""LLM-based semantic grading for non-multiple-choice questions."""
+
+from typing import Optional, Union
+
+import json
+from uuid import UUID
+
+from app.services.model_gateway import generate_json
+
+_GRADING_PROMPT = """你是一个专业的学习评估系统。请对比学生的答案和标准答案，给出评分和反馈。
+
+## 题目信息
+- 题目类型: {question_type}
+- 题干: {stem}
+- 标准答案: {standard_answer}
+- 解析: {explanation}
+
+## 学生答案
+{user_answer}
+
+## 评分要求
+请以JSON格式返回:
+{{
+  "score": 0-100的整数,
+  "is_correct": true/false（60分及以上为true）,
+  "feedback": "具体的反馈和改进建议，不超过100字",
+  "key_points_hit": ["学生答对的关键点"],
+  "key_points_missed": ["学生遗漏的关键点"]
+}}"""
+
+
+def grade_answer(
+    question_type: str,
+    stem: str,
+    standard_answer: Union[str, dict, list],
+    user_answer: Union[str, dict, list],
+    explanation: Optional[str] = None,
+) -> dict:
+    """Grade a user answer against a standard answer using LLM semantic comparison.
+
+    For choice questions, uses exact match.
+    For all other types (blank, short_answer, programming, case_analysis), uses LLM.
+    """
+    if question_type == "choice":
+        return _grade_exact(standard_answer, user_answer)
+
+    ans_str = json.dumps(standard_answer, ensure_ascii=False) if not isinstance(standard_answer, str) else standard_answer
+    user_str = json.dumps(user_answer, ensure_ascii=False) if not isinstance(user_answer, str) else user_answer
+
+    from app.services.prompt_utils import build_prompt
+    prompt = build_prompt("grading_semantic_v1", _GRADING_PROMPT, {
+        "question_type": question_type,
+        "stem": stem,
+        "standard_answer": ans_str,
+        "user_answer": user_str,
+        "explanation": explanation or "无",
+    })
+
+    try:
+        result = generate_json(prompt, required_keys=["score", "is_correct", "feedback"])
+        if "_model_mode" in result:
+            raise RuntimeError(f"评分服务降级: {result['_model_mode']}")
+        result["score"] = max(0, min(100, int(result.get("score", 0))))
+        result["is_correct"] = result["score"] >= 60
+        result["_grading_method"] = "llm_semantic"
+        return result
+    except Exception as exc:
+        raise RuntimeError(f"AI 评分失败: {exc}") from exc
+
+
+def _grade_exact(standard_answer: Union[str, dict, list], user_answer: Union[str, dict, list]) -> dict:
+    """Exact match grading for multiple-choice questions."""
+    s = str(standard_answer).strip().upper()
+    u = str(user_answer).strip().upper()
+    correct = s == u
+    return {
+        "score": 100 if correct else 0,
+        "is_correct": correct,
+        "feedback": "回答正确！" if correct else f"正确答案是 {standard_answer}",
+        "key_points_hit": [str(standard_answer)] if correct else [],
+        "key_points_missed": [] if correct else [str(standard_answer)],
+        "_grading_method": "exact",
+    }
+
+
+def grade_and_record(
+    user_id: UUID,
+    question_id: UUID,
+    question_type: str,
+    stem: str,
+    standard_answer: Union[str, dict, list],
+    user_answer: Union[str, dict, list],
+    explanation: Optional[str] = None,
+    time_spent_seconds: Optional[int] = None,
+    knowledge_point: Optional[str] = None,
+    conversation_id: Optional[UUID] = None,
+) -> dict:
+    """Grade an answer and save the record to the database."""
+    from app.services.resource_library import save_answer_record
+
+    result = grade_answer(question_type, stem, standard_answer, user_answer, explanation)
+
+    record = save_answer_record({
+        "user_id": user_id,
+        "question_id": question_id,
+        "user_answer": user_answer if isinstance(user_answer, dict) else {"answer": user_answer},
+        "is_correct": result["is_correct"],
+        "score": result["score"],
+        "grading_method": result.get("_grading_method", "exact"),
+        "grading_detail": result,
+        "time_spent_seconds": time_spent_seconds,
+    })
+
+    # 画像反馈闭环：答题后更新四维度 + 创建学习记录
+    if knowledge_point:
+        try:
+            from app.services.profile_service import get_profile
+            from app.services.profile_eval_service import evaluate_knowledge_point, update_profile_dimensions
+            from app.services.learning_record_service import create_learning_record
+            from app.schemas.learning_record import LearningRecordCreate
+
+            profile = get_profile(user_id, conversation_id=conversation_id)
+            if profile:
+                quiz_accuracy = result["score"] / 100.0
+                dim = evaluate_knowledge_point(
+                    profile, knowledge_point,
+                    quiz_accuracy=quiz_accuracy, total_questions=1,
+                )
+                update_profile_dimensions(user_id, knowledge_point, dim, conversation_id=conversation_id)
+
+            # 创建学习记录（含错题要点）
+            key_points_missed = result.get("key_points_missed") or []
+            create_learning_record(LearningRecordCreate(
+                user_id=user_id,
+                knowledge_point=knowledge_point,
+                resource_type="quiz",
+                score=result["score"],
+                duration_seconds=time_spent_seconds or 0,
+                wrong_points=[kp for kp in key_points_missed if isinstance(kp, str)],
+                feedback=result.get("feedback"),
+            ), conversation_id=conversation_id)
+        except Exception:
+            pass  # 不阻断评分返回
+
+    return {**result, "record_id": record["id"]}

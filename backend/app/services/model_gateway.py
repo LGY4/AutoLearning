@@ -1,0 +1,611 @@
+from __future__ import annotations
+
+import base64
+import contextlib
+import contextvars
+import hashlib
+import hmac
+import json
+import ssl
+import threading
+from collections.abc import Iterable
+from datetime import datetime, timezone
+from email.utils import format_datetime
+from typing import Dict,  List,  Optional, Union
+from urllib.parse import urlencode, urlparse
+
+import time
+
+import httpx
+from pydantic import BaseModel, ValidationError
+
+from app.core.config import get_settings
+
+
+PROVIDER_PRESETS: Dict[str, Dict[str, str]] = {
+    "deepseek": {
+        "label": "默认模型 (DeepSeek V4)",
+        "api_base": "https://api.deepseek.com/v1",
+        "model": "deepseek-chat",
+    },
+    "moai": {
+        "label": "moai.top",
+        "api_base": "https://moai.top/v1",
+        "model": "gpt-5.4-mini",
+    },
+    "spark": {
+        "label": "Spark X2",
+        "api_base": "",
+        "model": "spark-x",
+    },
+    "ollama": {
+        "label": "Ollama (本地)",
+        "api_base": "http://localhost:11434/v1",
+        "model": "qwen2.5:7b",
+    },
+}
+
+
+def get_model_status() -> Dict[str, Union[str, bool, int]]:
+    settings = get_settings()
+    provider = settings.model_provider
+
+    if provider == "spark":
+        spark_ready = bool(settings.spark_app_id and settings.spark_api_key and settings.spark_api_secret)
+        try:
+            import websocket  # noqa: F401
+            websocket_ready = True
+        except ModuleNotFoundError:
+            websocket_ready = False
+        return {
+            "provider": "spark",
+            "spark_ready": spark_ready,
+            "spark_model": settings.spark_model,
+            "websocket_ready": websocket_ready,
+            "mode": "spark" if spark_ready and websocket_ready else "unavailable",
+            "json_retries": settings.spark_json_retries,
+            "presets": PROVIDER_PRESETS,
+        }
+
+    if provider == "openai_compatible":
+        return {
+            "provider": "openai_compatible",
+            "api_base": settings.llm_api_base,
+            "model": settings.llm_model,
+            "api_key_configured": bool(settings.llm_api_key),
+            "mode": "openai_compatible",
+            "presets": PROVIDER_PRESETS,
+        }
+
+    return {
+        "provider": provider,
+        "mode": "unavailable",
+        "presets": PROVIDER_PRESETS,
+    }
+
+
+# ── Circuit breaker ─────────────────────────────────────────────────────────
+
+_CB_FAILURE_THRESHOLD = 5
+_CB_RECOVERY_SECONDS = 30
+
+_cb_failures = 0
+_cb_open_until = 0.0
+_cb_lock = threading.Lock()
+
+
+def _cb_record_success() -> None:
+    global _cb_failures
+    with _cb_lock:
+        _cb_failures = 0
+
+
+def _cb_record_failure() -> None:
+    global _cb_failures, _cb_open_until
+    with _cb_lock:
+        _cb_failures += 1
+        if _cb_failures >= _CB_FAILURE_THRESHOLD:
+            _cb_open_until = time.monotonic() + _CB_RECOVERY_SECONDS
+
+
+def _cb_is_open() -> bool:
+    with _cb_lock:
+        if _cb_open_until == 0:
+            return False
+        if time.monotonic() >= _cb_open_until:
+            return False
+        return True
+
+
+# ── Retry helper for transient HTTP errors ────────────────────────────────
+
+_TRANSIENT_STATUS_CODES = {429, 500, 502, 503, 504}
+_MAX_HTTP_RETRIES = 3
+_BASE_DELAY = 1.0  # seconds
+
+
+def _retry_request(client: httpx.Client, method: str, url: str, **kwargs) -> httpx.Response:
+    """Retry transient HTTP errors with exponential backoff."""
+    last_exc: Optional[Exception] = None
+    for attempt in range(_MAX_HTTP_RETRIES + 1):
+        try:
+            response = client.request(method, url, **kwargs)
+            if response.status_code not in _TRANSIENT_STATUS_CODES:
+                return response
+            if attempt < _MAX_HTTP_RETRIES:
+                retry_after = response.headers.get("retry-after")
+                delay = float(retry_after) if retry_after else _BASE_DELAY * (2 ** attempt)
+                time.sleep(delay)
+                continue
+            response.raise_for_status()
+        except httpx.TimeoutException:
+            last_exc = RuntimeError(f"LLM request timed out after {client.timeout}s")
+            if attempt < _MAX_HTTP_RETRIES:
+                time.sleep(_BASE_DELAY * (2 ** attempt))
+                continue
+            raise last_exc
+    return response  # type: ignore[return-value]
+
+
+# ── OpenAI-compatible API ──────────────────────────────────────────────────
+
+
+class ModelOverride(BaseModel):
+    provider: Optional[str] = None
+    api_base: Optional[str] = None
+    api_key: Optional[str] = None
+    model_name: Optional[str] = None
+    temperature: Optional[float] = None
+
+
+# Context variable for per-request model overrides
+_model_override_ctx: contextvars.ContextVar[Optional[ModelOverride]] = contextvars.ContextVar(
+    "_model_override_ctx", default=None
+)
+
+
+@contextlib.contextmanager
+def model_override_context(override: Optional[ModelOverride]):
+    """Set a per-request model override for all LLM calls in this context."""
+    token = _model_override_ctx.set(override)
+    try:
+        yield
+    finally:
+        _model_override_ctx.reset(token)
+
+
+def _resolve_overrides(override: Optional[ModelOverride]) -> dict:
+    settings = get_settings()
+
+    # Check context variable if no explicit override
+    if override is None:
+        override = _model_override_ctx.get()
+
+    # Start from provider preset if specified
+    preset: Dict[str, str] = {}
+    if override and override.provider and override.provider in PROVIDER_PRESETS:
+        preset = PROVIDER_PRESETS[override.provider]
+
+    api_base = (
+        override.api_base if override and override.api_base
+        else preset.get("api_base") or settings.llm_api_base
+    ).rstrip("/")
+
+    api_key = (
+        override.api_key if override and override.api_key
+        else preset.get("api_key") or settings.llm_api_key
+    )
+
+    model = (
+        override.model_name if override and override.model_name
+        else preset.get("model") or settings.llm_model
+    )
+
+    temperature = (
+        override.temperature if override and override.temperature is not None
+        else settings.llm_temperature
+    )
+
+    # Spark uses WebSocket, not HTTP — override must route to spark
+    use_spark = (override and override.provider == "spark") or (
+        not override and settings.model_provider == "spark"
+    )
+
+    return {
+        "api_base": api_base,
+        "api_key": api_key,
+        "model": model,
+        "temperature": temperature,
+        "timeout": settings.llm_timeout_seconds,
+        "max_tokens": settings.llm_max_tokens,
+        "use_spark": use_spark,
+    }
+
+
+def _call_openai_compatible(prompt: str, override: Optional[ModelOverride] = None) -> str:
+    cfg = _resolve_overrides(override)
+    if not cfg["api_key"]:
+        raise RuntimeError("LLM_API_KEY is not configured")
+
+    url = f"{cfg['api_base']}/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {cfg['api_key']}",
+    }
+    payload = {
+        "model": cfg["model"],
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": cfg["max_tokens"],
+        "temperature": cfg["temperature"],
+    }
+
+    with httpx.Client(timeout=cfg["timeout"]) as client:
+        response = _retry_request(client, "POST", url, json=payload, headers=headers)
+        if response.status_code == 401:
+            raise RuntimeError("LLM API key is invalid or expired")
+        response.raise_for_status()
+        data = response.json()
+
+    choices = data.get("choices", [])
+    if not choices:
+        raise RuntimeError("OpenAI-compatible API returned empty choices")
+    return choices[0].get("message", {}).get("content", "").strip()
+
+
+def _call_openai_compatible_json(prompt: str, override: Optional[ModelOverride] = None) -> dict:
+    """Call with JSON mode enabled."""
+    cfg = _resolve_overrides(override)
+    if not cfg["api_key"]:
+        raise RuntimeError("LLM_API_KEY is not configured")
+
+    url = f"{cfg['api_base']}/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {cfg['api_key']}",
+    }
+    payload = {
+        "model": cfg["model"],
+        "messages": [
+            {
+                "role": "system",
+                "content": "You must respond with valid JSON only. No markdown, no explanation, just the JSON object.",
+            },
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": cfg["max_tokens"],
+        "temperature": cfg["temperature"],
+        "response_format": {"type": "json_object"},
+    }
+
+    with httpx.Client(timeout=cfg["timeout"]) as client:
+        response = _retry_request(client, "POST", url, json=payload, headers=headers)
+        if response.status_code == 401:
+            raise RuntimeError("LLM API key is invalid or expired")
+        response.raise_for_status()
+        data = response.json()
+
+    choices = data.get("choices", [])
+    if not choices:
+        raise RuntimeError("OpenAI-compatible API returned empty choices")
+    content = choices[0].get("message", {}).get("content", "").strip()
+    return _extract_json_object(content)
+
+
+def analyze_images(prompt: str, images: List[str], override: Optional[ModelOverride] = None) -> str:
+    """Analyze images using vision-capable model (GPT-4o, etc.)."""
+    cfg = _resolve_overrides(override)
+    if not cfg["api_key"]:
+        raise RuntimeError("LLM_API_KEY is not configured")
+
+    # Use full model for vision if current model is mini variant
+    vision_model = cfg["model"]
+    if "mini" in vision_model:
+        vision_model = vision_model.replace("-mini", "")
+    if "gpt-" not in vision_model and "claude" not in vision_model:
+        vision_model = "gpt-5.4"
+
+    url = f"{cfg['api_base']}/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {cfg['api_key']}",
+    }
+
+    # Build content array with text and images
+    content_parts: List[dict] = [{"type": "text", "text": prompt}]
+    for img_data in images:
+        if img_data.startswith("data:"):
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": img_data, "detail": "high"},
+            })
+        else:
+            content_parts.append({
+                "type": "image_url",
+                "image_url": {"url": img_data, "detail": "high"},
+            })
+
+    payload = {
+        "model": vision_model,
+        "messages": [{"role": "user", "content": content_parts}],
+        "max_tokens": cfg["max_tokens"],
+        "temperature": cfg["temperature"],
+    }
+
+    with httpx.Client(timeout=cfg["timeout"] * 2) as client:
+        response = _retry_request(client, "POST", url, json=payload, headers=headers)
+        if response.status_code == 401:
+            raise RuntimeError("Vision API key is invalid or expired")
+        response.raise_for_status()
+        data = response.json()
+
+    choices = data.get("choices", [])
+    if not choices:
+        raise RuntimeError("Vision API returned empty choices")
+    return choices[0].get("message", {}).get("content", "").strip()
+
+
+# ── Spark WebSocket (legacy) ───────────────────────────────────────────────
+
+
+def _spark_authorized_url() -> str:
+    settings = get_settings()
+    parsed = urlparse(settings.spark_api_url)
+    date = format_datetime(datetime.now(timezone.utc), usegmt=True)
+    signature_origin = f"host: {parsed.netloc}\ndate: {date}\nGET {parsed.path} HTTP/1.1"
+    signature_sha = hmac.new(
+        (settings.spark_api_secret or "").encode("utf-8"),
+        signature_origin.encode("utf-8"),
+        digestmod=hashlib.sha256,
+    ).digest()
+    signature = base64.b64encode(signature_sha).decode("utf-8")
+    authorization_origin = (
+        f'api_key="{settings.spark_api_key}", algorithm="hmac-sha256", '
+        f'headers="host date request-line", signature="{signature}"'
+    )
+    authorization = base64.b64encode(authorization_origin.encode("utf-8")).decode("utf-8")
+    query = urlencode({"authorization": authorization, "date": date, "host": parsed.netloc})
+    return f"{settings.spark_api_url}?{query}"
+
+
+def _call_spark(prompt: str) -> str:
+    import websocket
+
+    settings = get_settings()
+    payload = {
+        "header": {"app_id": settings.spark_app_id, "uid": "autolearning-live"},
+        "parameter": {"chat": {"domain": settings.spark_model, "temperature": 0.4, "max_tokens": 2048}},
+        "payload": {"message": {"text": [{"role": "user", "content": prompt}]}} ,
+    }
+    ws = websocket.create_connection(
+        _spark_authorized_url(),
+        timeout=settings.llm_timeout_seconds,
+        sslopt={"cert_reqs": ssl.CERT_NONE, "check_hostname": False},
+    )
+    try:
+        ws.send(json.dumps(payload, ensure_ascii=False))
+        chunks: List[str] = []
+        while True:
+            message = json.loads(ws.recv())
+            header = message.get("header", {})
+            if header.get("code") != 0:
+                raise RuntimeError(header.get("message", "Spark model call failed"))
+            choices = message.get("payload", {}).get("choices", {})
+            for item in choices.get("text", []):
+                chunks.append(item.get("content", ""))
+            if choices.get("status") == 2:
+                break
+        return "".join(chunks).strip()
+    finally:
+        ws.close()
+
+
+# ── Shared utilities ───────────────────────────────────────────────────────
+
+
+def _extract_json_object(text: str) -> dict:
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.strip("`")
+        if cleaned.lower().startswith("json"):
+            cleaned = cleaned[4:].strip()
+    try:
+        payload = json.loads(cleaned, strict=False)
+    except json.JSONDecodeError:
+        start = cleaned.find("{")
+        end = cleaned.rfind("}")
+        if start < 0 or end <= start:
+            raise
+        payload = json.loads(cleaned[start : end + 1], strict=False)
+    if not isinstance(payload, dict):
+        raise ValueError("Structured model output must be a JSON object")
+    return payload
+
+
+def _validate_required_keys(payload: dict, required_keys: Optional[Iterable[str]]) -> None:
+    missing = [key for key in required_keys or [] if key not in payload]
+    if missing:
+        raise ValueError(f"Structured model output missing keys: {', '.join(missing)}")
+
+
+# ── Public API ─────────────────────────────────────────────────────────────
+
+
+def _dispatch_text(prompt: str, override: Optional[ModelOverride] = None) -> str:
+    """Route to the configured LLM provider for text generation."""
+    cfg = _resolve_overrides(override)
+
+    if cfg["use_spark"] and not (override and override.api_base):
+        status = get_model_status()
+        if status["mode"] != "spark":
+            raise RuntimeError("Spark is not configured or websocket-client is not installed")
+        return _call_spark(prompt)
+
+    return _call_openai_compatible(prompt, override)
+
+
+def _dispatch_json(prompt: str, override: Optional[ModelOverride] = None) -> dict:
+    """Route to the configured LLM provider for JSON generation."""
+    cfg = _resolve_overrides(override)
+
+    if cfg["use_spark"] and not (override and override.api_base):
+        status = get_model_status()
+        if status["mode"] != "spark":
+            raise RuntimeError("Spark is not configured or websocket-client is not installed")
+        return _extract_json_object(_call_spark(prompt))
+
+    return _call_openai_compatible_json(prompt, override)
+
+
+def generate_text(prompt: str, fallback: Optional[str] = None, model_override: Optional[ModelOverride] = None) -> str:
+    """Generate text from the configured LLM. Raises on failure unless fallback is provided."""
+    if _cb_is_open():
+        if fallback is not None:
+            return fallback
+        raise RuntimeError("LLM circuit breaker is open — service temporarily unavailable")
+    try:
+        result = _dispatch_text(prompt, model_override)
+        _cb_record_success()
+        return result
+    except Exception:
+        _cb_record_failure()
+        if fallback is not None:
+            return fallback
+        raise
+
+
+def generate_stream(prompt: str, model_override: Optional[ModelOverride] = None):
+    """Yield text chunks from a streaming LLM call (OpenAI-compatible SSE)."""
+    if _cb_is_open():
+        raise RuntimeError("LLM circuit breaker is open — service temporarily unavailable")
+    cfg = _resolve_overrides(model_override)
+    if not cfg["api_key"]:
+        raise RuntimeError("LLM_API_KEY is not configured")
+
+    url = f"{cfg['api_base']}/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {cfg['api_key']}",
+    }
+    payload = {
+        "model": cfg["model"],
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": cfg["max_tokens"],
+        "temperature": cfg["temperature"],
+        "stream": True,
+    }
+
+    try:
+        with httpx.Client(timeout=cfg["timeout"]) as client:
+            with client.stream("POST", url, json=payload, headers=headers) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        content = delta.get("content")
+                        if content:
+                            yield content
+                    except (json.JSONDecodeError, IndexError, KeyError):
+                        continue
+        _cb_record_success()
+    except Exception:
+        _cb_record_failure()
+        raise
+
+
+def generate_stream_with_system(system_prompt: str, user_prompt: str, model_override: Optional[ModelOverride] = None):
+    """Yield text chunks from a streaming LLM call with separate system/user messages."""
+    if _cb_is_open():
+        raise RuntimeError("LLM circuit breaker is open")
+    cfg = _resolve_overrides(model_override)
+    if not cfg["api_key"]:
+        raise RuntimeError("LLM_API_KEY is not configured")
+
+    url = f"{cfg['api_base']}/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {cfg['api_key']}",
+    }
+    payload = {
+        "model": cfg["model"],
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "max_tokens": cfg["max_tokens"],
+        "temperature": cfg["temperature"],
+        "stream": True,
+    }
+
+    try:
+        with httpx.Client(timeout=cfg["timeout"]) as client:
+            with client.stream("POST", url, json=payload, headers=headers) as response:
+                response.raise_for_status()
+                for line in response.iter_lines():
+                    if not line or not line.startswith("data: "):
+                        continue
+                    data_str = line[6:]
+                    if data_str.strip() == "[DONE]":
+                        break
+                    try:
+                        chunk = json.loads(data_str)
+                        delta = chunk.get("choices", [{}])[0].get("delta", {})
+                        content = delta.get("content")
+                        if content:
+                            yield content
+                    except (json.JSONDecodeError, IndexError, KeyError):
+                        continue
+        _cb_record_success()
+    except Exception:
+        _cb_record_failure()
+        raise
+
+
+def generate_json(
+    prompt: str,
+    fallback: Optional[dict] = None,
+    required_keys: Optional[Iterable[str]] = None,
+    schema: Optional[type[BaseModel]] = None,
+    max_retries: Optional[int] = None,
+    model_override: Optional[ModelOverride] = None,
+) -> dict:
+    """Generate structured JSON from the configured LLM with retry and validation."""
+    if _cb_is_open():
+        if fallback is not None:
+            return {**fallback, "_model_mode": "circuit_breaker_open", "_retry_count": 0}
+        raise RuntimeError("LLM circuit breaker is open — service temporarily unavailable")
+
+    settings = get_settings()
+    retries = settings.spark_json_retries if max_retries is None else max_retries
+    last_error: Optional[Exception] = None
+
+    strict_prompt = (
+        f"{prompt}\n\n"
+        f"Only return one JSON object. Required keys: {', '.join(required_keys or [])}."
+    )
+
+    for attempt in range(retries + 1):
+        attempt_prompt = strict_prompt if attempt == 0 else f"{strict_prompt}\nFix the previous invalid JSON. Error: {last_error}"
+        try:
+            payload = _dispatch_json(attempt_prompt, model_override)
+            _validate_required_keys(payload, required_keys)
+            if schema is not None:
+                payload = schema.model_validate(payload).model_dump(mode="json")
+            payload["_model_mode"] = get_model_status()["provider"]
+            payload["_retry_count"] = attempt
+            _cb_record_success()
+            return payload
+        except (json.JSONDecodeError, ValidationError, ValueError, RuntimeError, httpx.HTTPError) as exc:
+            last_error = exc
+
+    _cb_record_failure()
+    # All retries exhausted
+    if fallback is not None:
+        return {**fallback, "_model_mode": "fallback_after_retries", "_retry_count": retries + 1}
+
+    raise RuntimeError(f"Structured JSON generation failed after {retries + 1} attempts: {last_error}")
