@@ -1,7 +1,7 @@
 import { useCallback, useRef, useState } from "react";
 import { Film, Play, Loader2, Download, RotateCcw } from "lucide-react";
 import { useAppContext } from "../context/AppContext";
-import { apiGet, apiPost } from "../api/client";
+import { apiGet, apiPost, getFriendlyError } from "../api/client";
 
 interface SceneResult {
   scene: number;
@@ -122,7 +122,7 @@ export function VideoStudioPage() {
       setTimeout(() => clearInterval(pollInterval), 600000);
 
     } catch (err) {
-      setError(err instanceof Error ? err.message : "请求失败");
+      setError(err instanceof Error ? getFriendlyError(err.message) : "请求失败，请重试");
       setGenerating(false);
     }
   }, [user, topic, subject, numScenes, style, ttsVoice]);

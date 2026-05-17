@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { apiPost } from "../../api/client";
+import { apiPost, getFriendlyError } from "../../api/client";
 import type { IntentResult } from "./ChatMessage";
 
 interface QuizQuestion {
@@ -31,6 +31,7 @@ interface Props {
   originalQuestion: string;
   conversationId: string | null;
   isKnownKp: boolean;
+  isPostTest?: boolean;
   onComplete: (result: IntentResult) => void;
 }
 
@@ -54,6 +55,7 @@ export function InlineQuiz({
   originalQuestion,
   conversationId,
   isKnownKp,
+  isPostTest,
   onComplete,
 }: Props) {
   const [currentQuestion, setCurrentQuestion] = useState<QuizQuestion>(question);
@@ -88,7 +90,7 @@ export function InlineQuiz({
         onComplete(res);
       }
     } catch (e) {
-      setError(e instanceof Error ? e.message : "提交失败，请重试");
+      setError(e instanceof Error ? getFriendlyError(e.message) : "提交失败，请重试");
     } finally {
       setSubmitting(false);
     }
@@ -102,13 +104,15 @@ export function InlineQuiz({
     <div className="inline-quiz">
       <div className="inline-quiz-header">
         <span className="inline-quiz-label">
-          {isKnownKp ? "能力检测" : "快速诊断"}
+          {isPostTest ? "学习效果检验" : isKnownKp ? "能力检测" : "快速诊断"}
         </span>
         <span className="inline-quiz-kp">{knowledgePoint}</span>
         <span className="inline-quiz-count">第 {questionCount} 题</span>
       </div>
       <p className="inline-quiz-hint">
-        {isKnownKp
+        {isPostTest
+          ? `检验你对「${knowledgePoint}」的学习效果。`
+          : isKnownKp
           ? `检测你对「${knowledgePoint}」的掌握程度是否有所提升。`
           : `在回答你的问题之前，让我先了解一下你对「${knowledgePoint}」的掌握程度。`}
       </p>

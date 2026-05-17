@@ -15,7 +15,8 @@ router = APIRouter()
 
 
 @router.post("/generate", response_model=ApiResponse[LearningPath])
-def generate_path(payload: LearningPathGenerateRequest) -> ApiResponse[LearningPath]:
+def generate_path(payload: LearningPathGenerateRequest, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[LearningPath]:
+    payload.user_id = current_user.id
     return success(learning_path_service.generate_path(payload))
 
 

@@ -364,7 +364,8 @@ def _finalize_quiz(
     base_agent_id: Optional[UUID] = None,
 ) -> dict:
     """Score the quiz, update profile, generate tutor answer."""
-    from app.services import adaptive_service
+    from app.services import adaptive_service, learning_record_service
+    from app.schemas.learning_record import LearningRecordCreate
 
     questions = session.get("questions", [])
     answers = session.get("answers", {})
@@ -372,6 +373,21 @@ def _finalize_quiz(
     total = len(questions)
     accuracy = correct_count / max(total, 1)
     is_known_kp = session.get("is_known_kp", False)
+
+    # Create learning record for the quiz
+    try:
+        learning_record_service.create_learning_record(
+            LearningRecordCreate(
+                user_id=user_id,
+                knowledge_point=knowledge_point,
+                resource_type="quiz",
+                score=round(accuracy * 100),
+                wrong_points=[knowledge_point] if accuracy < 0.6 else [],
+            ),
+            conversation_id=conversation_id,
+        )
+    except Exception as exc:
+        logger.warning("Failed to create learning record for quiz: %s", exc)
 
     # Profile update: additive for new KP, overwrite for known KP
     update_result = adaptive_service.post_learning_update(
@@ -432,3 +448,46 @@ def _finalize_quiz(
     }
 
 
+def generate_post_test(
+    user_id: UUID,
+    knowledge_point: str,
+    conversation_id: Optional[UUID] = None,
+) -> dict:
+    """Generate a post-learning quiz to verify understanding after tutor answer."""
+    from app.services import diagnostic_agent
+
+    profile = profile_service.get_profile(user_id, conversation_id=conversation_id)
+    subject = profile.learning_goal.target_course if profile and profile.learning_goal.target_course else "通用"
+    overall_level = profile.knowledge_profile.overall_level if profile else "beginner"
+    dim = profile.knowledge_profile.topic_dimensions.get(knowledge_point) if profile else None
+
+    try:
+        q = diagnostic_agent.generate_adaptive_quiz_question(
+            knowledge_point=knowledge_point,
+            subject=subject,
+            current_dim=dim.model_dump() if dim else None,
+            correct_count=0,
+            wrong_count=0,
+            questions_answered=0,
+        )
+        return {
+            "quiz_pending": True,
+            "is_post_test": True,
+            "question": q,
+            "knowledge_point": knowledge_point,
+            "quiz_session": {
+                "knowledge_point": knowledge_point,
+                "original_question": f"学习效果检验：{knowledge_point}",
+                "is_known_kp": bool(dim),
+                "questions": [q],
+                "answers": {},
+                "correct_count": 0,
+                "wrong_count": 0,
+                "status": "active",
+                "is_post_test": True,
+            },
+            "conversation_id": str(conversation_id) if conversation_id else None,
+        }
+    except Exception as exc:
+        logger.warning("Post-test generation failed for '%s': %s", knowledge_point, exc)
+        return {"post_test_pending": False, "error": str(exc)}

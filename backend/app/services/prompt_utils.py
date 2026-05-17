@@ -4,6 +4,7 @@ from __future__ import annotations
 from typing import Dict,  Optional
 
 import json
+import re
 import threading
 from pathlib import Path
 
@@ -27,19 +28,33 @@ def load_prompt_templates() -> Dict[str, str]:
 
 
 def get_template(name: str, fallback: str) -> str:
-    return load_prompt_templates().get(name, fallback)
+    # Priority: JSON overlay > embedded constants > caller-provided fallback
+    from app.prompts.fallbacks import FALLBACK_TEMPLATES
+    json_templates = load_prompt_templates()
+    return json_templates.get(name) or FALLBACK_TEMPLATES.get(name) or fallback
 
 
 def build_prompt(name: str, fallback: str, variables: dict, strategy_prompt: Optional[str] = None) -> str:
-    """Load a prompt template, interpolate variables, and optionally prepend a strategy prompt."""
+    """Load a prompt template, interpolate variables, and optionally prepend a strategy prompt.
+
+    Uses single-pass regex replacement to avoid user-content injection into other placeholders.
+    """
     template = get_template(name, fallback)
+
+    # Build replacement map: serialize dict/list values once
+    serialized: Dict[str, str] = {}
     for key, value in variables.items():
         if isinstance(value, (dict, list)):
-            placeholder = "{" + key + "}"
-            if placeholder in template:
-                template = template.replace(placeholder, json.dumps(value, ensure_ascii=False))
+            serialized[key] = json.dumps(value, ensure_ascii=False)
         else:
-            template = template.replace("{" + key + "}", str(value))
+            serialized[key] = str(value)
+
+    # Single-pass regex: replace all {key} placeholders at once
+    def _replace(match: re.Match) -> str:
+        k = match.group(1)
+        return serialized.get(k, match.group(0))
+
+    template = re.sub(r"\{(\w+)\}", _replace, template)
 
     if strategy_prompt:
         return f"{strategy_prompt}\n\n---\n\n{template}"

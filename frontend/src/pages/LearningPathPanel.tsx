@@ -34,7 +34,8 @@ export function LearningPathPanel({ path }: Props) {
         await apiPost("/learning/path/node/complete", { user_id: state.user.id, node_id: nodeId });
       }
     } catch {
-      // Backend sync failed, optimistic update already applied
+      // Rollback on failure
+      dispatch({ type: "SET_PATH", payload: path });
     }
   };
 

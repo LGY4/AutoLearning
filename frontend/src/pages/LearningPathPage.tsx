@@ -40,7 +40,7 @@ export function LearningPathPage() {
 
   async function handleGenerate() {
     if (!state.profile?.learning_goal?.current_goal) {
-      setError("请先设置学习目标");
+      setError("请先在「课程与目标」中设置学习目标");
       return;
     }
     setGenerating(true);
@@ -65,10 +65,12 @@ export function LearningPathPage() {
 
   async function handleMarkComplete(node: LearningPathNode) {
     if (!path || !state.user?.id) return;
-    // Optimistic update
-    const updatedNodes = path.nodes.map((n, i, arr) => {
+    // Optimistic update: mark completed, unlock next locked node
+    const sorted = [...path.nodes].sort((a, b) => a.order - b.order);
+    const completedIdx = sorted.findIndex((n) => n.node_id === node.node_id);
+    const updatedNodes = sorted.map((n, i) => {
       if (n.node_id === node.node_id) return { ...n, status: "completed" as const };
-      if (i > 0 && arr[i - 1].node_id === node.node_id && n.status === "locked") {
+      if (completedIdx >= 0 && i === completedIdx + 1 && n.status === "locked") {
         return { ...n, status: "available" as const };
       }
       return n;
@@ -77,7 +79,8 @@ export function LearningPathPage() {
     try {
       await apiPost("/learning/path/node/complete", { user_id: state.user.id, node_id: node.node_id });
     } catch {
-      // Backend sync failed, optimistic update already applied
+      // Rollback on failure
+      dispatch({ type: "SET_PATH", payload: path });
     }
   }
 
@@ -92,7 +95,16 @@ export function LearningPathPage() {
         </button>
       </div>
 
-      {error && <div className="page-error">{error}</div>}
+      {error && (
+        <div className="page-error">
+          {error}
+          {error.includes("学习目标") && (
+            <button className="btn-secondary btn-sm" style={{ marginLeft: 8 }} onClick={() => navigate("/courses")} type="button">
+              去设置
+            </button>
+          )}
+        </div>
+      )}
 
       {!path || path.nodes.length === 0 ? (
         <div className="empty-state">
@@ -105,7 +117,7 @@ export function LearningPathPage() {
               <h3>{path.title || "学习路径"}</h3>
               <span className="tag">{path.status}</span>
             </div>
-            <p className="info-card-desc">版本 v{path.strategy ? 1 : 1} · 共 {path.nodes.length} 个节点</p>
+            <p className="info-card-desc">共 {path.nodes.length} 个节点 · 已完成 {path.nodes.filter((n) => n.status === "completed").length}/{path.nodes.length}</p>
           </div>
 
           <div className="path-timeline">

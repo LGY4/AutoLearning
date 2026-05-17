@@ -19,29 +19,85 @@ logger = logging.getLogger(__name__)
 
 
 def _merge_profiles(conv_profile: "StudentProfile", master: "StudentProfile") -> "StudentProfile":
-    """Merge conversation profile changes onto master profile."""
-    from app.schemas.profile import DynamicUpdate
+    """Merge conversation profile changes onto master profile.
 
-    # topic_dimensions: overlay conversation values, keep master-only KPs
-    merged_dims = dict(master.knowledge_profile.topic_dimensions)
-    for kp, dim in conv_profile.knowledge_profile.topic_dimensions.items():
-        merged_dims[kp] = dim
+    Three-layer merge strategy:
+    - Knowledge layer: confidence-weighted merge via merge_dimensions
+    - Preference layer: sliding-window weighted blend
+    - Basic layer: direct overwrite (latest wins)
+    """
+    from app.schemas.profile import DynamicUpdate, KnowledgeDimension
+    from app.services.strategy_engine import merge_dimensions, compute_known_topics, compute_weak_topics, compute_mastery_level
 
-    # weak_topics / known_topics: union, master first
-    merged_weak = list(dict.fromkeys(master.knowledge_profile.weak_topics + conv_profile.knowledge_profile.weak_topics))
-    merged_known = list(dict.fromkeys(master.knowledge_profile.known_topics + conv_profile.knowledge_profile.known_topics))
+    # ── Knowledge layer: confidence-weighted merge ──
+    master_dims = master.knowledge_profile.topic_dimensions
+    conv_dims = conv_profile.knowledge_profile.topic_dimensions
+    all_kps = set(master_dims.keys()) | set(conv_dims.keys())
+    merged_dims: dict[str, KnowledgeDimension] = {}
+    for kp in all_kps:
+        m = master_dims.get(kp)
+        c = conv_dims.get(kp)
+        if m and c:
+            # Both have data — use merge_dimensions with medium confidence
+            merged_dims[kp] = merge_dimensions(m, c, confidence=0.6)
+        elif c:
+            merged_dims[kp] = c
+        else:
+            merged_dims[kp] = m
 
-    # mastery_level: overlay
-    merged_mastery = dict(master.knowledge_profile.mastery_level)
-    merged_mastery.update(conv_profile.knowledge_profile.mastery_level)
+    # Derive weak/known/mastery from merged dimensions
+    merged_weak = compute_weak_topics(merged_dims)
+    merged_known = compute_known_topics(merged_dims)
+    merged_mastery = compute_mastery_level(merged_dims)
+
+    # overall_level: take conversation's if truthy, else master's
+    overall_level = conv_profile.knowledge_profile.overall_level
+    if not overall_level or overall_level == "unknown":
+        overall_level = master.knowledge_profile.overall_level
 
     new_kp = master.knowledge_profile.model_copy(update={
         "topic_dimensions": merged_dims,
-        "overall_level": conv_profile.knowledge_profile.overall_level or master.knowledge_profile.overall_level,
+        "overall_level": overall_level,
         "weak_topics": merged_weak,
         "known_topics": merged_known,
         "mastery_level": merged_mastery,
     })
+
+    # ── Preference layer: sliding-window blend ──
+    # For string enums, use majority-vote weighted toward conversation
+    def _blend_str(conv_val: str, master_val: str, conv_weight: float = 0.7) -> str:
+        if conv_val == master_val:
+            return conv_val
+        # If conversation has a non-default value, prefer it
+        if conv_val and conv_val not in ("mixed", "unknown", "medium"):
+            return conv_val
+        return master_val
+
+    master_pref = master.learning_preference
+    conv_pref = conv_profile.learning_preference
+    blended_pref = conv_pref.model_copy(update={
+        "learning_style": _blend_str(conv_pref.learning_style, master_pref.learning_style),
+    })
+
+    master_cog = master.cognitive_profile
+    conv_cog = conv_profile.cognitive_profile
+    blended_cog = conv_cog.model_copy(update={
+        "cognitive_style": _blend_str(conv_cog.cognitive_style, master_cog.cognitive_style),
+        "abstract_understanding": _blend_str(conv_cog.abstract_understanding, master_cog.abstract_understanding),
+        "hands_on_ability": _blend_str(conv_cog.hands_on_ability, master_cog.hands_on_ability),
+        "reading_patience": _blend_str(conv_cog.reading_patience, master_cog.reading_patience),
+    })
+
+    # Behavior: take max for numeric fields
+    master_beh = master.learning_behavior
+    conv_beh = conv_profile.learning_behavior
+    blended_beh = conv_beh.model_copy(update={
+        "average_study_minutes": max(master_beh.average_study_minutes, conv_beh.average_study_minutes),
+        "completion_rate": max(master_beh.completion_rate, conv_beh.completion_rate),
+        "recent_scores": (conv_beh.recent_scores or master_beh.recent_scores)[-10:],
+    })
+
+    # ── Basic layer: direct overwrite ──
     new_dynamic = DynamicUpdate(
         last_updated_at=now_iso(),
         update_source="conversation_merge",
@@ -51,9 +107,9 @@ def _merge_profiles(conv_profile: "StudentProfile", master: "StudentProfile") ->
         "knowledge_profile": new_kp,
         "basic_info": conv_profile.basic_info,
         "learning_goal": conv_profile.learning_goal,
-        "learning_preference": conv_profile.learning_preference,
-        "learning_behavior": conv_profile.learning_behavior,
-        "cognitive_profile": conv_profile.cognitive_profile,
+        "learning_preference": blended_pref,
+        "learning_behavior": blended_beh,
+        "cognitive_profile": blended_cog,
         "dynamic_update": new_dynamic,
         "completeness_score": max(master.completeness_score, conv_profile.completeness_score),
         "confidence_score": max(master.confidence_score, conv_profile.confidence_score),
@@ -84,6 +140,7 @@ from app.db.models import (
     LearningPathNodeModel,
     LearningRecordModel,
     LearningResourceModel,
+    ProfileEventModel,
     RecommendationRecord,
     ResourceVersion,
     StudentProfileHistory,
@@ -288,6 +345,31 @@ class InMemoryVerticalLoopRepository:
             del store.resources[resource_id]
             return True
         return False
+
+    def emit_event(self, user_id: UUID, event_type: str, event_payload: dict, confidence: float, source_type: str = "agent", source_id: Optional[UUID] = None) -> UUID:
+        event_id = uuid4()
+        store.profile_events.append({
+            "id": event_id,
+            "user_id": user_id,
+            "event_type": event_type,
+            "event_payload": event_payload,
+            "confidence": confidence,
+            "source_type": source_type,
+            "source_id": source_id,
+            "status": "pending",
+            "error_message": None,
+        })
+        return event_id
+
+    def list_pending_events(self, user_id: UUID, limit: int = 20) -> List[dict]:
+        return [e for e in store.profile_events if e["user_id"] == user_id and e["status"] == "pending"][:limit]
+
+    def update_event_status(self, event_id: UUID, status: str, error_message: Optional[str] = None) -> None:
+        for e in store.profile_events:
+            if e["id"] == event_id:
+                e["status"] = status
+                e["error_message"] = error_message
+                break
 
 
 class PostgresVerticalLoopRepository:
@@ -854,6 +936,50 @@ class PostgresVerticalLoopRepository:
             db.commit()
             return True
 
+    def emit_event(self, user_id: UUID, event_type: str, event_payload: dict, confidence: float, source_type: str = "agent", source_id: Optional[UUID] = None) -> UUID:
+        with _safe_session() as db:
+            row = ProfileEventModel(
+                user_id=user_id,
+                event_type=event_type,
+                event_payload=event_payload,
+                confidence=confidence,
+                source_type=source_type,
+                source_id=source_id,
+                status="pending",
+            )
+            db.add(row)
+            db.flush()
+            return row.id
+
+    def list_pending_events(self, user_id: UUID, limit: int = 20) -> List[dict]:
+        with SessionLocal() as db:
+            rows = db.scalars(
+                select(ProfileEventModel)
+                .where(ProfileEventModel.user_id == user_id, ProfileEventModel.status == "pending")
+                .order_by(ProfileEventModel.created_at)
+                .limit(limit)
+            ).all()
+            return [
+                {
+                    "id": row.id,
+                    "event_type": row.event_type,
+                    "event_payload": row.event_payload,
+                    "confidence": float(row.confidence),
+                    "source_type": row.source_type,
+                    "source_id": row.source_id,
+                }
+                for row in rows
+            ]
+
+    def update_event_status(self, event_id: UUID, status: str, error_message: Optional[str] = None) -> None:
+        with _safe_session() as db:
+            row = db.get(ProfileEventModel, event_id)
+            if row:
+                row.status = status
+                row.error_message = error_message
+                if status == "applied":
+                    row.applied_at = datetime.now(timezone.utc)
+
 
 class AutoSwitchRepository:
     def __init__(self) -> None:
@@ -946,6 +1072,15 @@ class AutoSwitchRepository:
 
     def delete_resource(self, user_id: UUID, resource_id: UUID) -> bool:
         return self._run("delete_resource", user_id, resource_id)
+
+    def emit_event(self, user_id: UUID, event_type: str, event_payload: dict, confidence: float, source_type: str = "agent", source_id: Optional[UUID] = None) -> UUID:
+        return self._run("emit_event", user_id, event_type, event_payload, confidence, source_type=source_type, source_id=source_id)
+
+    def list_pending_events(self, user_id: UUID, limit: int = 20) -> List[dict]:
+        return self._run("list_pending_events", user_id, limit)
+
+    def update_event_status(self, event_id: UUID, status: str, error_message: Optional[str] = None) -> None:
+        return self._run("update_event_status", event_id, status, error_message)
 
 
 repository: VerticalLoopRepository = AutoSwitchRepository()

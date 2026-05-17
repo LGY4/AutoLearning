@@ -722,8 +722,9 @@ def score_diagnostic(
         ),
     )
 
-    # Save profile
-    repository.save_profile(profile)
+    # Save profile via event
+    from app.services.profile_event_service import ProfileEventType, emit_event
+    emit_event(user_id, ProfileEventType.DIAGNOSTIC_QUIZ, profile.model_dump(), confidence=0.9)
 
     # Build assessment snapshot
     assessment = {

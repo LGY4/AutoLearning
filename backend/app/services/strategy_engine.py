@@ -297,11 +297,22 @@ def merge_dimensions(
 
     策略：
     - 无旧数据 → 直接用新数据
+    - 旧数据是默认全low（无真实信号）→ 直接用新数据
     - 高置信度(confidence >= 0.7) → 直接覆盖
     - 中置信度(0.4-0.7) → 加权平均
     - 低置信度(< 0.4) → 保留旧数据
     """
     if existing is None:
+        return new
+
+    # Default all-low means no real assessment data — use new directly
+    is_default = (
+        existing.mastery == "low"
+        and existing.application == "low"
+        and existing.memory == "low"
+        and existing.understanding == "low"
+    )
+    if is_default:
         return new
 
     if confidence >= 0.7:

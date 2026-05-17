@@ -1,0 +1,50 @@
+{
+  "course": "数据结构",
+  "nodes": [
+    {"id": "ds_array", "name": "数组与动态数组", "level": 1, "subject": "数据结构", "chunk_ids": ["ds_array_001", "ds_array_002"], "depends_on": [], "description": "连续内存线性结构，支持O(1)随机访问"},
+    {"id": "ds_linkedlist", "name": "链表", "level": 1, "subject": "数据结构", "chunk_ids": ["ds_linkedlist_001", "ds_linkedlist_002", "ds_linkedlist_003"], "depends_on": [], "description": "动态数据结构，节点+指针"},
+    {"id": "ds_stack", "name": "栈", "level": 1, "subject": "数据结构", "chunk_ids": ["ds_stack_001", "ds_stack_002", "ds_stack_003", "ds_stack_004", "ds_stack_005"], "depends_on": ["ds_array"], "description": "后进先出线性结构"},
+    {"id": "ds_queue", "name": "队列", "level": 1, "subject": "数据结构", "chunk_ids": ["ds_queue_001", "ds_queue_002", "ds_queue_003"], "depends_on": ["ds_array"], "description": "先进先出线性结构"},
+    {"id": "ds_hash", "name": "哈希表", "level": 1, "subject": "数据结构", "chunk_ids": ["ds_hash_001", "ds_hash_002"], "depends_on": ["ds_array"], "description": "O(1)平均查找的键值存储"},
+    {"id": "ds_string", "name": "字符串", "level": 1, "subject": "数据结构", "chunk_ids": ["ds_string_001"], "depends_on": ["ds_array"], "description": "字符序列与匹配算法"},
+    {"id": "ds_tree", "name": "树", "level": 2, "subject": "数据结构", "chunk_ids": ["ds_tree_001", "ds_tree_002", "ds_tree_003", "ds_tree_004", "ds_tree_005", "ds_tree_006"], "depends_on": ["ds_linkedlist", "ds_queue", "ds_stack"], "description": "层次结构，二叉树、BST、堆、线段树、Trie"},
+    {"id": "ds_graph", "name": "图", "level": 2, "subject": "数据结构", "chunk_ids": ["ds_graph_001", "ds_graph_002", "ds_graph_003", "ds_graph_004", "ds_graph_005"], "depends_on": ["ds_queue", "ds_stack", "ds_hash", "ds_tree"], "description": "多对多关系结构，遍历、最短路、MST、拓扑排序"},
+    {"id": "ds_sort", "name": "排序算法", "level": 2, "subject": "数据结构", "chunk_ids": ["ds_sort_001", "ds_sort_002", "ds_sort_003"], "depends_on": ["ds_array", "ds_tree"], "description": "比较排序与非比较排序"},
+    {"id": "ds_search", "name": "查找算法", "level": 2, "subject": "数据结构", "chunk_ids": ["ds_search_001", "ds_search_002"], "depends_on": ["ds_array", "ds_sort"], "description": "二分查找及其变体"},
+    {"id": "ds_dp", "name": "动态规划", "level": 3, "subject": "数据结构", "chunk_ids": ["ds_dp_001", "ds_dp_002", "ds_dp_003"], "depends_on": ["ds_array", "ds_sort", "ds_search"], "description": "最优子结构+重叠子问题"},
+    {"id": "ds_greedy", "name": "贪心算法", "level": 3, "subject": "数据结构", "chunk_ids": ["ds_greedy_001"], "depends_on": ["ds_sort", "ds_dp"], "description": "局部最优推导全局最优"},
+    {"id": "ds_backtrack", "name": "回溯算法", "level": 3, "subject": "数据结构", "chunk_ids": ["ds_backtrack_001"], "depends_on": ["ds_tree", "ds_dp"], "description": "递归+剪枝穷举"},
+    {"id": "ds_bit", "name": "位运算", "level": 2, "subject": "数据结构", "chunk_ids": ["ds_bit_001"], "depends_on": ["ds_array"], "description": "位操作技巧"},
+    {"id": "ds_complexity", "name": "复杂度分析", "level": 1, "subject": "数据结构", "chunk_ids": ["ds_complexity_001"], "depends_on": [], "description": "时间空间复杂度理论"}
+  ],
+  "edges": [
+    {"from": "ds_array", "to": "ds_stack", "type": "prerequisite"},
+    {"from": "ds_array", "to": "ds_queue", "type": "prerequisite"},
+    {"from": "ds_array", "to": "ds_hash", "type": "prerequisite"},
+    {"from": "ds_array", "to": "ds_string", "type": "prerequisite"},
+    {"from": "ds_array", "to": "ds_bit", "type": "prerequisite"},
+    {"from": "ds_linkedlist", "to": "ds_tree", "type": "prerequisite"},
+    {"from": "ds_queue", "to": "ds_tree", "type": "prerequisite"},
+    {"from": "ds_stack", "to": "ds_tree", "type": "prerequisite"},
+    {"from": "ds_array", "to": "ds_sort", "type": "prerequisite"},
+    {"from": "ds_tree", "to": "ds_sort", "type": "prerequisite"},
+    {"from": "ds_array", "to": "ds_search", "type": "prerequisite"},
+    {"from": "ds_sort", "to": "ds_search", "type": "prerequisite"},
+    {"from": "ds_queue", "to": "ds_graph", "type": "prerequisite"},
+    {"from": "ds_stack", "to": "ds_graph", "type": "prerequisite"},
+    {"from": "ds_hash", "to": "ds_graph", "type": "prerequisite"},
+    {"from": "ds_tree", "to": "ds_graph", "type": "prerequisite"},
+    {"from": "ds_array", "to": "ds_dp", "type": "prerequisite"},
+    {"from": "ds_sort", "to": "ds_dp", "type": "prerequisite"},
+    {"from": "ds_search", "to": "ds_dp", "type": "prerequisite"},
+    {"from": "ds_sort", "to": "ds_greedy", "type": "prerequisite"},
+    {"from": "ds_dp", "to": "ds_greedy", "type": "prerequisite"},
+    {"from": "ds_tree", "to": "ds_backtrack", "type": "prerequisite"},
+    {"from": "ds_dp", "to": "ds_backtrack", "type": "prerequisite"}
+  ],
+  "learning_paths": {
+    "beginner": ["ds_complexity", "ds_array", "ds_linkedlist", "ds_stack", "ds_queue"],
+    "intermediate": ["ds_hash", "ds_string", "ds_tree", "ds_sort", "ds_search", "ds_bit"],
+    "advanced": ["ds_graph", "ds_dp", "ds_greedy", "ds_backtrack"]
+  }
+}

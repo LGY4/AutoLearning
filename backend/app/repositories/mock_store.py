@@ -88,6 +88,7 @@ class MockStore:
         self.answer_records: List[dict] = []
         self.profile_history: Dict[UUID, List[dict]] = {}
         self.resource_versions: Dict[UUID, List[dict]] = {}
+        self.profile_events: List[dict] = []
 
     def _load_question_bank(self) -> List[dict]:
         path = Path(__file__).resolve().parents[1] / "data" / "question_bank.json"

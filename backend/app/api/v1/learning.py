@@ -20,6 +20,8 @@ from app.schemas.auth import UserDTO
 from app.schemas.learning import ResourceRecommendRequest, ResourceRecommendResponse
 from app.services import assess_agent, diagnostic_agent, learning_service, master_agent
 
+_logger = logging.getLogger(__name__)
+
 
 router = APIRouter()
 
@@ -101,19 +103,30 @@ def intent_chat_stream(payload: IntentRouteRequest, current_user: UserDTO = Depe
         override = ModelOverride(provider=payload.model_provider)
         deadline = time.monotonic() + 300  # 5 min limit
 
-        with model_override_context(override):
-            for chunk in tutor_service.answer_question_streaming(
-                user_id=current_user.id,
-                question=payload.message,
-                knowledge_point=payload.knowledge_point,
-                base_agent_id=payload.base_agent_id,
-            ):
-                if time.monotonic() > deadline:
-                    break
-                if isinstance(chunk, dict):
-                    yield f"event: result\ndata: {json.dumps(chunk, ensure_ascii=False)}\n\n"
-                elif isinstance(chunk, str) and chunk:
-                    yield f"event: text_delta\ndata: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
+        try:
+            with model_override_context(override):
+                for chunk in tutor_service.answer_question_streaming(
+                    user_id=current_user.id,
+                    question=payload.message,
+                    knowledge_point=payload.knowledge_point,
+                    base_agent_id=payload.base_agent_id,
+                ):
+                    if time.monotonic() > deadline:
+                        break
+                    if isinstance(chunk, dict):
+                        yield f"event: result\ndata: {json.dumps(chunk, ensure_ascii=False)}\n\n"
+                    elif isinstance(chunk, str) and chunk:
+                        yield f"event: text_delta\ndata: {json.dumps({'content': chunk}, ensure_ascii=False)}\n\n"
+        except Exception as exc:
+            _logger.exception("chat-stream failed")
+            from app.core.errors import ServiceError, friendly_message, ErrorCode
+            if isinstance(exc, ServiceError):
+                msg = friendly_message(exc.code)
+                code = exc.code.value
+            else:
+                msg = "AI 服务暂时不可用，请重试"
+                code = "INTERNAL_ERROR"
+            yield f"event: error\ndata: {json.dumps({'message': msg, 'error_code': code}, ensure_ascii=False)}\n\n"
 
         yield "event: done\ndata: {}\n\n"
 
@@ -121,8 +134,6 @@ def intent_chat_stream(payload: IntentRouteRequest, current_user: UserDTO = Depe
 
 
 # ── Start-Stream (full learning pipeline with SSE) ──────────────────────
-
-_logger = logging.getLogger(__name__)
 
 
 class StartStreamRequest(BaseModel):
@@ -184,9 +195,16 @@ def learning_start_stream(
                 })
             except Exception as exc:
                 _logger.exception("start-stream failed")
+                from app.core.errors import ServiceError, friendly_message, ErrorCode
+                if isinstance(exc, ServiceError):
+                    msg = friendly_message(exc.code)
+                    code = exc.code.value
+                else:
+                    msg = "学习流程执行失败，请重试"
+                    code = "INTERNAL_ERROR"
                 q.put({
                     "type": "error",
-                    "data": {"message": str(exc)},
+                    "data": {"message": msg, "error_code": code},
                 })
             finally:
                 q.put(None)  # sentinel
@@ -251,6 +269,25 @@ def quiz_next_chat(payload: QuizNextRequest, current_user: UserDTO = Depends(get
     ))
 
 
+class PostTestRequest(BaseModel):
+    user_id: UUID
+    knowledge_point: str
+    conversation_id: Optional[UUID] = None
+
+
+@router.post("/chat/post-test", response_model=ApiResponse[dict])
+def post_test(payload: PostTestRequest, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
+    """Generate a post-learning quiz to verify understanding."""
+    payload.user_id = current_user.id
+    from app.services import tutor_service
+    result = tutor_service.generate_post_test(
+        user_id=current_user.id,
+        knowledge_point=payload.knowledge_point,
+        conversation_id=payload.conversation_id,
+    )
+    return success(result)
+
+
 @router.get("/assess", response_model=ApiResponse[dict])
 def assess_user(current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
     """AssessAgent — multi-dimensional learning evaluation."""
@@ -282,10 +319,7 @@ class OnboardSubmitRequest(BaseModel):
 class OnboardResult(BaseModel):
     profile: dict
     assessment: dict
-    score: float
-    total_questions: int
-    correct_count: int
-    topic_breakdown: Dict[str, dict]
+    quiz_result: dict
 
 
 class OnboardQuizResponse(BaseModel):
@@ -322,10 +356,7 @@ def onboard_submit(payload: OnboardSubmitRequest, current_user: UserDTO = Depend
     return success(OnboardResult(
         profile=result.get("profile", {}),
         assessment=result.get("assessment", {}),
-        score=result.get("score", 0.0),
-        total_questions=result.get("total_questions", 0),
-        correct_count=result.get("correct_count", 0),
-        topic_breakdown=result.get("topic_breakdown", {}),
+        quiz_result=result.get("quiz_result", {}),
     ))
 
 
@@ -358,6 +389,22 @@ def complete_path_node(payload: PathNodeCompleteRequest, current_user: UserDTO =
     path = repository.complete_path_node(current_user.id, payload.node_id)
     if path is None:
         raise HTTPException(status_code=404, detail="Learning path not found")
+
+    # Update profile for the completed node's knowledge point (timing #4)
+    completed_kp = None
+    for node in path.nodes:
+        if node.node_id == payload.node_id:
+            completed_kp = node.knowledge_point
+            break
+    if completed_kp:
+        from app.services.profile_event_service import ProfileEventType, emit_event
+        from app.services.profile_eval_service import evaluate_knowledge_point
+        from app.services.profile_service import get_profile
+        profile = get_profile(current_user.id)
+        if profile:
+            dim = evaluate_knowledge_point(profile, completed_kp, quiz_accuracy=0.8, total_questions=1)
+            emit_event(current_user.id, ProfileEventType.PATH_NODE_COMPLETE, {"knowledge_point": completed_kp, "dimension": dim.model_dump()}, confidence=0.6)
+
     return success(path.model_dump(mode="json"))
 
 

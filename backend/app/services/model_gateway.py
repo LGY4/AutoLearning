@@ -19,6 +19,8 @@ import time
 import httpx
 from pydantic import BaseModel, ValidationError
 
+from app.core.errors import ErrorCode, ServiceError
+
 from app.core.config import get_settings
 
 
@@ -139,7 +141,7 @@ def _retry_request(client: httpx.Client, method: str, url: str, **kwargs) -> htt
                 continue
             response.raise_for_status()
         except httpx.TimeoutException:
-            last_exc = RuntimeError(f"LLM request timed out after {client.timeout}s")
+            last_exc = ServiceError(ErrorCode.LLM_TIMEOUT, f"LLM 请求超时（{client.timeout}s）")
             if attempt < _MAX_HTTP_RETRIES:
                 time.sleep(_BASE_DELAY * (2 ** attempt))
                 continue
@@ -225,7 +227,7 @@ def _resolve_overrides(override: Optional[ModelOverride]) -> dict:
 def _call_openai_compatible(prompt: str, override: Optional[ModelOverride] = None) -> str:
     cfg = _resolve_overrides(override)
     if not cfg["api_key"]:
-        raise RuntimeError("LLM_API_KEY is not configured")
+        raise ServiceError(ErrorCode.LLM_AUTH_FAILED, "LLM API Key 未配置")
 
     url = f"{cfg['api_base']}/chat/completions"
     headers = {
@@ -242,13 +244,13 @@ def _call_openai_compatible(prompt: str, override: Optional[ModelOverride] = Non
     with httpx.Client(timeout=cfg["timeout"]) as client:
         response = _retry_request(client, "POST", url, json=payload, headers=headers)
         if response.status_code == 401:
-            raise RuntimeError("LLM API key is invalid or expired")
+            raise ServiceError(ErrorCode.LLM_AUTH_FAILED, "LLM API Key 无效或已过期")
         response.raise_for_status()
         data = response.json()
 
     choices = data.get("choices", [])
     if not choices:
-        raise RuntimeError("OpenAI-compatible API returned empty choices")
+        raise ServiceError(ErrorCode.LLM_GENERATION_FAILED, "AI 服务返回空结果")
     return choices[0].get("message", {}).get("content", "").strip()
 
 
@@ -256,7 +258,7 @@ def _call_openai_compatible_json(prompt: str, override: Optional[ModelOverride] 
     """Call with JSON mode enabled."""
     cfg = _resolve_overrides(override)
     if not cfg["api_key"]:
-        raise RuntimeError("LLM_API_KEY is not configured")
+        raise ServiceError(ErrorCode.LLM_AUTH_FAILED, "LLM API Key 未配置")
 
     url = f"{cfg['api_base']}/chat/completions"
     headers = {
@@ -280,13 +282,13 @@ def _call_openai_compatible_json(prompt: str, override: Optional[ModelOverride] 
     with httpx.Client(timeout=cfg["timeout"]) as client:
         response = _retry_request(client, "POST", url, json=payload, headers=headers)
         if response.status_code == 401:
-            raise RuntimeError("LLM API key is invalid or expired")
+            raise ServiceError(ErrorCode.LLM_AUTH_FAILED, "LLM API Key 无效或已过期")
         response.raise_for_status()
         data = response.json()
 
     choices = data.get("choices", [])
     if not choices:
-        raise RuntimeError("OpenAI-compatible API returned empty choices")
+        raise ServiceError(ErrorCode.LLM_GENERATION_FAILED, "AI 服务返回空结果")
     content = choices[0].get("message", {}).get("content", "").strip()
     return _extract_json_object(content)
 
@@ -295,7 +297,7 @@ def analyze_images(prompt: str, images: List[str], override: Optional[ModelOverr
     """Analyze images using vision-capable model (GPT-4o, etc.)."""
     cfg = _resolve_overrides(override)
     if not cfg["api_key"]:
-        raise RuntimeError("LLM_API_KEY is not configured")
+        raise ServiceError(ErrorCode.LLM_AUTH_FAILED, "LLM API Key 未配置")
 
     # Use full model for vision if current model is mini variant
     vision_model = cfg["model"]
@@ -334,13 +336,13 @@ def analyze_images(prompt: str, images: List[str], override: Optional[ModelOverr
     with httpx.Client(timeout=cfg["timeout"] * 2) as client:
         response = _retry_request(client, "POST", url, json=payload, headers=headers)
         if response.status_code == 401:
-            raise RuntimeError("Vision API key is invalid or expired")
+            raise ServiceError(ErrorCode.LLM_AUTH_FAILED, "Vision API Key 无效或已过期")
         response.raise_for_status()
         data = response.json()
 
     choices = data.get("choices", [])
     if not choices:
-        raise RuntimeError("Vision API returned empty choices")
+        raise ServiceError(ErrorCode.LLM_GENERATION_FAILED, "Vision API 返回空结果")
     return choices[0].get("message", {}).get("content", "").strip()
 
 
@@ -388,7 +390,7 @@ def _call_spark(prompt: str) -> str:
             message = json.loads(ws.recv())
             header = message.get("header", {})
             if header.get("code") != 0:
-                raise RuntimeError(header.get("message", "Spark model call failed"))
+                raise ServiceError(ErrorCode.LLM_GENERATION_FAILED, header.get("message", "星火模型调用失败"))
             choices = message.get("payload", {}).get("choices", {})
             for item in choices.get("text", []):
                 chunks.append(item.get("content", ""))
@@ -402,23 +404,145 @@ def _call_spark(prompt: str) -> str:
 # ── Shared utilities ───────────────────────────────────────────────────────
 
 
+def _repair_json_string(s: str) -> str:
+    """Apply repair strategies for common LLM JSON output issues (ported from OpenMAIC)."""
+    import re
+
+    # Fix malformed property fragments: "key: value" -> "key": value
+    s = re.sub(
+        r'([,{]\s*)"([A-Za-z_][A-Za-z0-9_]*)\s*:\s*(true|false|null|[+-]?\d+(?:\.\d+)?)"(?=\s*[,}])',
+        lambda m: f'{m.group(1)}"{m.group(2)}": {m.group(3)}',
+        s,
+    )
+
+    # Double-escape LaTeX backslash commands inside JSON strings
+    # Preserve valid JSON escapes: \", \\, \/, \b, \f, \n, \r, \t, \uXXXX
+    def _fix_latex_in_string(match: re.Match) -> str:
+        content = match.group(1)
+        fixed = re.sub(
+            r'\\([a-zA-Z])',
+            lambda m: m.group(0) if m.group(1) in 'bfnrtu' else '\\\\' + m.group(1),
+            content,
+        )
+        return f'"{fixed}"'
+
+    s = re.sub(r'"([^"\\]*(?:\\.[^"\\]*)*)"', _fix_latex_in_string, s)
+
+    # Fix remaining invalid escape sequences
+    s = re.sub(r'\\([^"\\\/bfnrtu\n\r])', lambda m: '\\\\' + m.group(1) if m.group(1).isalpha() else m.group(0), s)
+
+    # Fix truncated JSON objects
+    trimmed = s.strip()
+    if trimmed.startswith('{') and not trimmed.endswith('}'):
+        open_count = s.count('{')
+        close_count = s.count('}')
+        if open_count > close_count:
+            s += '}' * (open_count - close_count)
+    elif trimmed.startswith('[') and not trimmed.endswith(']'):
+        last_obj = s.rfind('}')
+        if last_obj > 0:
+            s = s[:last_obj + 1] + ']'
+
+    # Escape control characters
+    s = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', s)
+
+    # Remove trailing commas before } or ]
+    s = re.sub(r',\s*([}\]])', r'\1', s)
+
+    return s
+
+
 def _extract_json_object(text: str) -> dict:
+    """Extract and parse a JSON object from LLM output with multi-strategy repair."""
     cleaned = text.strip()
+
+    # Strategy 1: Extract from markdown code blocks
+    import re
+    code_blocks = re.findall(r'```(?:json)?\s*([\s\S]*?)```', cleaned)
+    for block in code_blocks:
+        block = block.strip()
+        if block.startswith('{') or block.startswith('['):
+            try:
+                payload = json.loads(block, strict=False)
+                if isinstance(payload, dict):
+                    return payload
+            except json.JSONDecodeError:
+                try:
+                    payload = json.loads(_repair_json_string(block), strict=False)
+                    if isinstance(payload, dict):
+                        return payload
+                except json.JSONDecodeError:
+                    pass
+
+    # Strategy 2: Bracket-matching extraction
+    first_brace = cleaned.find('{')
+    first_bracket = cleaned.find('[')
+    if first_brace >= 0 or first_bracket >= 0:
+        start = min(
+            x for x in [first_brace, first_bracket] if x >= 0
+        )
+        depth = 0
+        in_string = False
+        escape_next = False
+        end = -1
+        for i in range(start, len(cleaned)):
+            ch = cleaned[i]
+            if escape_next:
+                escape_next = False
+                continue
+            if ch == '\\' and in_string:
+                escape_next = True
+                continue
+            if ch == '"' and not escape_next:
+                in_string = not in_string
+                continue
+            if not in_string:
+                if ch in '[{':
+                    depth += 1
+                elif ch in ']}':
+                    depth -= 1
+                    if depth == 0:
+                        end = i
+                        break
+        if end > start:
+            extracted = cleaned[start:end + 1]
+            try:
+                payload = json.loads(extracted, strict=False)
+                if isinstance(payload, dict):
+                    return payload
+            except json.JSONDecodeError:
+                try:
+                    payload = json.loads(_repair_json_string(extracted), strict=False)
+                    if isinstance(payload, dict):
+                        return payload
+                except json.JSONDecodeError:
+                    pass
+
+    # Strategy 3: Direct parse (original behavior)
     if cleaned.startswith("```"):
         cleaned = cleaned.strip("`")
         if cleaned.lower().startswith("json"):
             cleaned = cleaned[4:].strip()
-    try:
-        payload = json.loads(cleaned, strict=False)
-    except json.JSONDecodeError:
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start < 0 or end <= start:
-            raise
-        payload = json.loads(cleaned[start : end + 1], strict=False)
-    if not isinstance(payload, dict):
-        raise ValueError("Structured model output must be a JSON object")
-    return payload
+
+    for attempt_text in [cleaned, _repair_json_string(cleaned)]:
+        try:
+            payload = json.loads(attempt_text, strict=False)
+            if isinstance(payload, dict):
+                return payload
+        except json.JSONDecodeError:
+            pass
+        # Try substring extraction
+        start = attempt_text.find("{")
+        end = attempt_text.rfind("}")
+        if start >= 0 and end > start:
+            try:
+                payload = json.loads(attempt_text[start:end + 1], strict=False)
+                if isinstance(payload, dict):
+                    return payload
+            except json.JSONDecodeError:
+                pass
+
+    raise ValueError(f"无法从 LLM 输出中提取有效 JSON（前100字符: {text[:100]!r}）")
 
 
 def _validate_required_keys(payload: dict, required_keys: Optional[Iterable[str]]) -> None:
@@ -437,7 +561,7 @@ def _dispatch_text(prompt: str, override: Optional[ModelOverride] = None) -> str
     if cfg["use_spark"] and not (override and override.api_base):
         status = get_model_status()
         if status["mode"] != "spark":
-            raise RuntimeError("Spark is not configured or websocket-client is not installed")
+            raise ServiceError(ErrorCode.LLM_AUTH_FAILED, "星火模型未配置或 websocket-client 未安装")
         return _call_spark(prompt)
 
     return _call_openai_compatible(prompt, override)
@@ -450,7 +574,7 @@ def _dispatch_json(prompt: str, override: Optional[ModelOverride] = None) -> dic
     if cfg["use_spark"] and not (override and override.api_base):
         status = get_model_status()
         if status["mode"] != "spark":
-            raise RuntimeError("Spark is not configured or websocket-client is not installed")
+            raise ServiceError(ErrorCode.LLM_AUTH_FAILED, "星火模型未配置或 websocket-client 未安装")
         return _extract_json_object(_call_spark(prompt))
 
     return _call_openai_compatible_json(prompt, override)
@@ -461,7 +585,7 @@ def generate_text(prompt: str, fallback: Optional[str] = None, model_override: O
     if _cb_is_open():
         if fallback is not None:
             return fallback
-        raise RuntimeError("LLM circuit breaker is open — service temporarily unavailable")
+        raise ServiceError(ErrorCode.LLM_CIRCUIT_OPEN)
     try:
         result = _dispatch_text(prompt, model_override)
         _cb_record_success()
@@ -476,10 +600,10 @@ def generate_text(prompt: str, fallback: Optional[str] = None, model_override: O
 def generate_stream(prompt: str, model_override: Optional[ModelOverride] = None):
     """Yield text chunks from a streaming LLM call (OpenAI-compatible SSE)."""
     if _cb_is_open():
-        raise RuntimeError("LLM circuit breaker is open — service temporarily unavailable")
+        raise ServiceError(ErrorCode.LLM_CIRCUIT_OPEN)
     cfg = _resolve_overrides(model_override)
     if not cfg["api_key"]:
-        raise RuntimeError("LLM_API_KEY is not configured")
+        raise ServiceError(ErrorCode.LLM_AUTH_FAILED, "LLM API Key 未配置")
 
     url = f"{cfg['api_base']}/chat/completions"
     headers = {
@@ -521,10 +645,10 @@ def generate_stream(prompt: str, model_override: Optional[ModelOverride] = None)
 def generate_stream_with_system(system_prompt: str, user_prompt: str, model_override: Optional[ModelOverride] = None):
     """Yield text chunks from a streaming LLM call with separate system/user messages."""
     if _cb_is_open():
-        raise RuntimeError("LLM circuit breaker is open")
+        raise ServiceError(ErrorCode.LLM_CIRCUIT_OPEN)
     cfg = _resolve_overrides(model_override)
     if not cfg["api_key"]:
-        raise RuntimeError("LLM_API_KEY is not configured")
+        raise ServiceError(ErrorCode.LLM_AUTH_FAILED, "LLM API Key 未配置")
 
     url = f"{cfg['api_base']}/chat/completions"
     headers = {
@@ -578,7 +702,7 @@ def generate_json(
     if _cb_is_open():
         if fallback is not None:
             return {**fallback, "_model_mode": "circuit_breaker_open", "_retry_count": 0}
-        raise RuntimeError("LLM circuit breaker is open — service temporarily unavailable")
+        raise ServiceError(ErrorCode.LLM_CIRCUIT_OPEN)
 
     settings = get_settings()
     retries = settings.spark_json_retries if max_retries is None else max_retries
@@ -608,4 +732,4 @@ def generate_json(
     if fallback is not None:
         return {**fallback, "_model_mode": "fallback_after_retries", "_retry_count": retries + 1}
 
-    raise RuntimeError(f"Structured JSON generation failed after {retries + 1} attempts: {last_error}")
+    raise ServiceError(ErrorCode.LLM_GENERATION_FAILED, f"结构化 JSON 生成失败（{retries + 1} 次尝试）: {last_error}")

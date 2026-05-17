@@ -7,6 +7,7 @@ from uuid import UUID, uuid4
 
 from app.repositories.vertical_loop_repository import repository
 from app.schemas.learning_record import LearningRecordCreate, LearningRecordResponse
+from app.services.profile_event_service import ProfileEventType, emit_event
 from app.services.runtime_support import now_iso
 
 
@@ -39,26 +40,7 @@ def create_learning_record(request: LearningRecordCreate, conversation_id: Optio
     updated = list(request.wrong_points)
     if profile and request.wrong_points:
         merged = list(dict.fromkeys(profile.knowledge_profile.weak_topics + request.wrong_points))
-        updated_kp = profile.knowledge_profile.model_copy(update={"weak_topics": merged})
-        updated_dyn = profile.dynamic_update.model_copy(update={
-            "last_updated_at": now_iso(),
-            "update_source": "learning_record",
-            "update_reason": "根据学习记录和错题反馈更新薄弱点",
-        })
-        new_profile = profile.model_copy(update={
-            "knowledge_profile": updated_kp,
-            "dynamic_update": updated_dyn,
-            "version": profile.version + 1,
-        })
-        if conversation_id:
-            from app.services import conversation_service
-            session = conversation_service.get_conversation(conversation_id)
-            if session and session.profile_id:
-                repository.save_profile_in_place(session.profile_id, new_profile)
-            else:
-                repository.save_profile(new_profile)
-        else:
-            repository.save_profile(new_profile)
+        emit_event(request.user_id, ProfileEventType.WRONG_POINTS, {"wrong_points": request.wrong_points}, confidence=0.5)
         updated = merged
     next_review = _compute_next_review(request.user_id, request.knowledge_point, conversation_id=conversation_id)
     return LearningRecordResponse(
@@ -91,15 +73,16 @@ def get_learning_summary(user_id) -> dict:
     # 最近记录：合并学习记录和答题记录，按时间倒序
     recent_answers = [
         {"type": "answer", "score": r.get("score"), "is_correct": r.get("is_correct"),
-         "submitted_at": r.get("submitted_at"), "question_id": r.get("question_id")}
+         "created_at": r.get("submitted_at"), "question_id": r.get("question_id"),
+         "knowledge_point": r.get("knowledge_point") or ""}
         for r in answer_records[:10]
     ]
     recent_learning = [
-        {"type": "learning", "score": r.get("score"), "knowledge_point": r.get("knowledge_point"),
-         "submitted_at": r.get("created_at") or r.get("submitted_at")}
+        {"type": "learning", "score": r.get("score"), "knowledge_point": r.get("knowledge_point") or "",
+         "created_at": r.get("created_at") or r.get("submitted_at")}
         for r in records[:10]
     ]
-    recent = sorted(recent_learning + recent_answers, key=lambda x: x.get("submitted_at") or "", reverse=True)[:5]
+    recent = sorted(recent_learning + recent_answers, key=lambda x: x.get("created_at") or "", reverse=True)[:5]
 
     return {
         "total_count": len(records) + len(answer_records),

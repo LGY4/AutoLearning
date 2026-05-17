@@ -11,7 +11,7 @@ export function HomePage({ onAuth }: Props) {
   const { state } = useAppContext();
   const navigate = useNavigate();
   const { user, profile, recommendations } = state;
-  const hasProfile = profile.completeness_score > 0;
+  const hasProfile = profile.completeness_score > 0.5;
 
   if (!user) {
     return (
@@ -55,11 +55,6 @@ export function HomePage({ onAuth }: Props) {
           <h2>👋 欢迎，{user.username}</h2>
           <p>完成初始诊断，让系统了解你的知识水平并定制学习方案。</p>
           <OnboardPanel onComplete={() => navigate("/chat")} />
-          <div className="home-actions" style={{ marginTop: 16 }}>
-            <button type="button" className="home-btn-secondary" onClick={() => navigate("/chat")}>
-              跳过，直接对话
-            </button>
-          </div>
         </div>
       </div>
     );

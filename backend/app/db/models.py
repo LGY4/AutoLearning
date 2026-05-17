@@ -402,3 +402,19 @@ class AnswerRecordModel(Base):
     grading_detail = Column(JSONB)
     time_spent_seconds = Column(Integer)
     submitted_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class ProfileEventModel(Base):
+    __tablename__ = "profile_event"
+
+    id = uuid_pk()
+    user_id = Column(UUID(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False, index=True)
+    event_type = Column(String(64), nullable=False)
+    event_payload = Column(JSONB, nullable=False)
+    confidence = Column(Numeric(5, 2), nullable=False)
+    source_type = Column(String(64))
+    source_id = Column(UUID(as_uuid=True))
+    status = Column(String(32), nullable=False, default="pending")
+    applied_at = Column(DateTime(timezone=True))
+    error_message = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())

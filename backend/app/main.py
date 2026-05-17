@@ -12,6 +12,7 @@ from fastapi.staticfiles import StaticFiles
 
 from app.api.v1.router import api_router
 from app.core.config import get_settings
+from app.core.errors import ServiceError, friendly_message
 
 logger = logging.getLogger(__name__)
 
@@ -57,12 +58,24 @@ app.mount("/static/generated", StaticFiles(directory=str(_generated_dir)), name=
 app.mount("/static/images", StaticFiles(directory=str(_images_dir)), name="images")
 
 
+@app.exception_handler(ServiceError)
+async def service_error_handler(request: Request, exc: ServiceError):
+    logger.warning("ServiceError on %s %s: [%s] %s", request.method, request.url.path, exc.code.value, exc.detail)
+    return JSONResponse(
+        status_code=503,
+        content={
+            "detail": friendly_message(exc.code),
+            "error_code": exc.code.value,
+        },
+    )
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.exception("Unhandled exception on %s %s", request.method, request.url.path)
     return JSONResponse(
         status_code=500,
-        content={"detail": "服务器内部错误，请稍后重试"},
+        content={"detail": "服务器内部错误，请稍后重试", "error_code": "INTERNAL_ERROR"},
     )
 
 

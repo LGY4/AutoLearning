@@ -1,0 +1,38 @@
+[
+  {
+    "agent_id": "224ce3b6-b0e3-4d42-b06e-fa74ada6a190",
+    "user_id": "11111111-1111-1111-1111-111111111111",
+    "name": "考试冲刺智能体",
+    "description": "面向短期冲刺复习的基层智能体。",
+    "system_prompt": "你是考试冲刺型基层智能体，强调高频考点、错题回收和短期提分。",
+    "applies_to": [
+      "profile_agent",
+      "path_agent",
+      "quiz_agent",
+      "tutor_agent"
+    ],
+    "model_provider": "spark",
+    "output_style": "concise",
+    "is_system": false,
+    "created_at": "2026-05-11T02:31:15+08:00",
+    "updated_at": "2026-05-11T02:31:15+08:00"
+  },
+  {
+    "agent_id": "601e18fc-1a3e-4576-9c94-42d3d3cb0644",
+    "user_id": "11111111-1111-1111-1111-111111111111",
+    "name": "考试冲刺智能体",
+    "description": "面向短期冲刺复习的基层智能体。",
+    "system_prompt": "你是考试冲刺型基层智能体，强调高频考点、错题回收和短期提分。",
+    "applies_to": [
+      "profile_agent",
+      "path_agent",
+      "quiz_agent",
+      "tutor_agent"
+    ],
+    "model_provider": "spark",
+    "output_style": "concise",
+    "is_system": false,
+    "created_at": "2026-05-11T02:33:40+08:00",
+    "updated_at": "2026-05-11T02:33:40+08:00"
+  }
+]

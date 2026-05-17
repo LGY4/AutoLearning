@@ -47,10 +47,9 @@ def post_learning_update(
                 quiz_accuracy=accuracy,
                 total_questions=total,
             )
-            profile = profile_eval_service.update_profile_dimensions(
-                user_id, knowledge_point, dim,
-                conversation_id=conversation_id,
-            )
+            from app.services.profile_event_service import ProfileEventType, emit_event
+            emit_event(user_id, ProfileEventType.ADAPTIVE_QUIZ, {"knowledge_point": knowledge_point, "dimension": dim.model_dump(), "accuracy": accuracy, "total": total}, confidence=0.7)
+            profile = profile_service.get_profile(user_id, conversation_id=conversation_id)
 
     # 2. Strategy calculation
     if not profile:

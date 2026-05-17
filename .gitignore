@@ -26,9 +26,18 @@ build/
 logs/
 
 # ── Data & Storage ──
-data/
+/data/
+backend/data/
 *.db
 *.sqlite3
+backend/app/data/animations/
+backend/app/data/generated_videos/
+backend/app/data/images/
+backend/app/data/videos/
+backend/app/data/remotion-project/
+
+# ── Config with credentials ──
+backend/alembic.ini
 
 # ── IDE ──
 .idea/

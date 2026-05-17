@@ -33,21 +33,36 @@ def evaluate_knowledge_point(
         # Confidence scales with number of questions answered
         confidence = min(0.6 + total_questions * 0.05, 0.95)
 
+        # Mastery: knows the concept
         if quiz_accuracy >= 0.8:
-            mastery, memory = "high", "high"
+            mastery = "high"
         elif quiz_accuracy >= 0.5:
-            mastery, memory = "mid", "mid"
+            mastery = "mid"
         else:
-            mastery, memory = "low", "low"
+            mastery = "low"
 
+        # Application: can use in practice
         if quiz_accuracy >= 0.7:
             application = "mid"
-            understanding = "mid"
         elif quiz_accuracy >= 0.4:
             application = "low"
-            understanding = "mid"
         else:
             application = "low"
+
+        # Memory: retains knowledge (scales slower — needs repeated success)
+        if quiz_accuracy >= 0.9 and total_questions >= 3:
+            memory = "high"
+        elif quiz_accuracy >= 0.6:
+            memory = "mid"
+        else:
+            memory = "low"
+
+        # Understanding: grasps the why
+        if quiz_accuracy >= 0.7:
+            understanding = "mid"
+        elif quiz_accuracy >= 0.4:
+            understanding = "mid"
+        else:
             understanding = "low"
 
         new_dim = KnowledgeDimension(

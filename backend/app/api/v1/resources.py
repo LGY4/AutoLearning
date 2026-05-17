@@ -19,6 +19,7 @@ from app.schemas.resource import (
 from app.services import resource_service
 from app.services import resource_library
 from app.services import grading_service
+from app.services import diagnostic_agent
 
 
 router = APIRouter()
@@ -143,6 +144,39 @@ def create_question(payload: QuestionCreate) -> ApiResponse[dict]:
 @router.delete("/questions/{question_id}", response_model=ApiResponse[dict])
 def delete_question(question_id: UUID) -> ApiResponse[dict]:
     return success({"deleted": resource_library.delete_question(question_id)})
+
+
+class QuestionGenerateRequest(BaseModel):
+    knowledge_point: str
+    subject: str = "通用"
+    overall_level: str = "beginner"
+
+
+@router.post("/questions/generate", response_model=ApiResponse[dict])
+def generate_questions(payload: QuestionGenerateRequest, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
+    """Auto-generate practice questions for a knowledge point and save to question bank."""
+    result = diagnostic_agent.generate_knowledge_point_quiz(
+        knowledge_point=payload.knowledge_point,
+        subject=payload.subject,
+        overall_level=payload.overall_level,
+    )
+    saved = []
+    for q in result.get("questions", []):
+        try:
+            saved_q = resource_library.save_question({
+                "knowledge_point": payload.knowledge_point,
+                "question_type": "choice",
+                "stem": q.get("question", ""),
+                "options": q.get("options", []),
+                "answer": q.get("answer", ""),
+                "explanation": q.get("explanation", ""),
+                "difficulty_level": {1: "easy", 2: "medium", 3: "hard"}.get(q.get("difficulty", 1), "medium"),
+                "subject": payload.subject,
+            })
+            saved.append(saved_q)
+        except Exception:
+            pass
+    return success({"generated": len(result.get("questions", [])), "saved": len(saved), "questions": saved})
 
 
 # ── Answer Grading ────────────────────────────────────────────────

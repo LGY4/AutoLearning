@@ -11,6 +11,7 @@ from pathlib import Path
 from uuid import UUID, uuid4
 
 from app.core.enums import AgentName, PathNodeStatus, ResourceStatus, ResourceType
+from app.core.errors import ErrorCode, ServiceError
 from app.schemas.agent import (
     CodeCaseDraft,
     FlowchartDraft,
@@ -22,6 +23,7 @@ from app.schemas.agent import (
     QuizDraft,
     QuizQuestionDraft,
     ReadingDraft,
+    ResourceOutlineDraft,
     TutorAnswerDraft,
     VideoDraft,
 )
@@ -53,6 +55,7 @@ from app.prompts.strategy import (
     CODE_STRATEGY_SYSTEM,
     READING_STRATEGY_SYSTEM,
 )
+from app.prompts import fallbacks as _fb
 
 
 def _now_iso() -> str:
@@ -63,15 +66,8 @@ from app.services.prompt_utils import get_template as _prompt_template, load_pro
 
 
 def _build_prompt(name: str, fallback: str, variables: dict, strategy_prompt: Optional[str] = None) -> str:
-    template = _prompt_template(name, fallback)
-    # Real variable interpolation
-    for key, value in variables.items():
-        if isinstance(value, (dict, list)):
-            placeholder = "{" + key + "}"
-            if placeholder in template:
-                template = template.replace(placeholder, json.dumps(value, ensure_ascii=False))
-        else:
-            template = template.replace("{" + key + "}", str(value))
+    from app.services.prompt_utils import build_prompt as _safe_build
+    template = _safe_build(name, fallback, variables)
 
     # Inject strategy engine params as explicit instruction sentences
     tc = variables.get("teaching_params") or {}
@@ -267,6 +263,7 @@ def build_profile(request: ProfileExtractRequest, previous: Optional[StudentProf
                 "learning_behavior": request.learning_behavior or {},
                 "archetype_hint": archetype_hint,
             },
+            strategy_prompt=PROFILE_EVALUATE_SYSTEM,
         ),
         base_agent,
     )
@@ -291,7 +288,7 @@ def build_profile(request: ProfileExtractRequest, previous: Optional[StudentProf
     except Exception as exc:
         if previous:
             return previous
-        raise RuntimeError(f"画像构建失败且无历史画像可回退: {exc}") from exc
+        raise ServiceError(ErrorCode.LLM_GENERATION_FAILED, f"画像构建失败且无历史画像可回退: {exc}") from exc
 
     version = (previous.version + 1) if previous else 1
     return StudentProfile(
@@ -377,7 +374,7 @@ def build_learning_path(user_id: UUID, goal: str, subject: str, profile: Optiona
         )
         draft = LearningPathDraft.model_validate(raw)
     except Exception as exc:
-        raise RuntimeError(f"路径规划LLM调用失败: {exc}") from exc
+        raise ServiceError(ErrorCode.LLM_GENERATION_FAILED, f"路径规划失败: {exc}") from exc
 
     # Enforce dependency ordering: resolve prerequisite chain for selected nodes
     selected_names = [node.knowledge_point for node in draft.nodes]
@@ -501,43 +498,150 @@ def build_learning_resource(
     )
 
 
-def _generate_document(
-    profile, knowledge_point, subject, difficulty, rag_hits, common_metadata, base_agent
-) -> tuple[str, str, dict]:
+def _generate_outline(
+    knowledge_point: str,
+    subject: str,
+    difficulty: str,
+    profile: Optional[StudentProfile],
+    rag_hits: list,
+    base_agent: Optional[BaseAgentProfile],
+    resource_kind: str = "document",
+) -> Optional[ResourceOutlineDraft]:
+    """Stage 1: Generate a structured outline before filling content."""
     tc = _get_teaching_context(profile, knowledge_point)
+    kind_label = "学习文档" if resource_kind == "document" else "阅读材料"
     prompt = _apply_base_agent_prompt(
         _build_prompt(
-            "resource_document_v1",
-            "根据知识点和学生画像生成结构化 Markdown 学习文档。\n"
-            "返回 JSON：{title, markdown, summary, outline, examples, common_mistakes, next_steps}",
+            f"outline_{resource_kind}_v1",
+            f"为知识点生成{kind_label}的结构化大纲。\n"
+            "返回 JSON：{title, summary, sections: [{heading, key_points, description}]}",
             {
                 "student_profile": _profile_summary(profile),
                 "knowledge_point": knowledge_point,
                 "subject": subject,
-                "difficulty": str(tc["teaching_params"].get("difficulty", difficulty)),
+                "difficulty": difficulty,
                 "rag_context": rag_hits,
                 **tc,
             },
-            strategy_prompt=DOCUMENT_STRATEGY_SYSTEM,
         ),
         base_agent,
     )
-
     try:
         raw = model_gateway.generate_json(
             prompt,
-            required_keys=["title", "markdown", "summary"],
-            schema=MarkdownResourceDraft,
+            required_keys=["title", "summary", "sections"],
+            schema=ResourceOutlineDraft,
         )
-    except Exception as exc:
-        return (
-            f"文档生成失败，请稍后重试。",
-            AgentName.DOCUMENT.value,
-            {**common_metadata, "error": str(exc), "_failed": True},
+        return ResourceOutlineDraft.model_validate(raw)
+    except Exception:
+        return None
+
+
+def _assemble_sections(sections: list, knowledge_point: str) -> str:
+    """Assemble section contents into a single markdown document."""
+    parts: list[str] = []
+    for sec in sections:
+        heading = sec.get("heading", "")
+        content = sec.get("content", "")
+        if heading:
+            parts.append(f"## {heading}")
+        if content:
+            parts.append(content)
+    return "\n\n".join(parts) if parts else f"# {knowledge_point}\n\n内容生成中，请稍后重试。"
+
+
+def _generate_document(
+    profile, knowledge_point, subject, difficulty, rag_hits, common_metadata, base_agent
+) -> tuple[str, str, dict]:
+    tc = _get_teaching_context(profile, knowledge_point)
+    effective_diff = str(tc["teaching_params"].get("difficulty", difficulty))
+    used_two_stage = False
+
+    # Stage 1: Generate outline
+    outline = _generate_outline(knowledge_point, subject, effective_diff, profile, rag_hits, base_agent, "document")
+
+    if outline and outline.sections:
+        # Stage 2: Fill each section with detailed content
+        section_specs = [
+            {"heading": s.heading, "key_points": s.key_points, "description": s.description}
+            for s in outline.sections
+        ]
+        prompt = _apply_base_agent_prompt(
+            _build_prompt(
+                "resource_document_v2",
+                "根据大纲逐章节生成详细内容。\n"
+                "返回 JSON：{sections: [{heading, content}], examples, common_mistakes, next_steps}",
+                {
+                    "student_profile": _profile_summary(profile),
+                    "knowledge_point": knowledge_point,
+                    "subject": subject,
+                    "difficulty": effective_diff,
+                    "outline": section_specs,
+                    "rag_context": rag_hits,
+                    **tc,
+                },
+                strategy_prompt=DOCUMENT_STRATEGY_SYSTEM,
+            ),
+            base_agent,
         )
-    draft = MarkdownResourceDraft.model_validate(raw)
+        try:
+            raw = model_gateway.generate_json(
+                prompt,
+                required_keys=["sections"],
+            )
+            sections = raw.get("sections", [])
+            markdown_content = _assemble_sections(sections, knowledge_point)
+            draft = MarkdownResourceDraft(
+                title=outline.title,
+                markdown=markdown_content,
+                summary=outline.summary,
+                outline=[s.heading for s in outline.sections],
+                examples=raw.get("examples", []),
+                common_mistakes=raw.get("common_mistakes", []),
+                next_steps=raw.get("next_steps", []),
+            )
+            used_two_stage = True
+        except Exception:
+            # Fallback to single-stage if section fill fails
+            draft = None
+    else:
+        draft = None
+
+    # Fallback: single-stage generation (original behavior)
+    if draft is None:
+        prompt = _apply_base_agent_prompt(
+            _build_prompt(
+                "resource_document_v1",
+                "根据知识点和学生画像生成结构化 Markdown 学习文档。\n"
+                "返回 JSON：{title, markdown, summary, outline, examples, common_mistakes, next_steps}",
+                {
+                    "student_profile": _profile_summary(profile),
+                    "knowledge_point": knowledge_point,
+                    "subject": subject,
+                    "difficulty": effective_diff,
+                    "rag_context": rag_hits,
+                    **tc,
+                },
+                strategy_prompt=DOCUMENT_STRATEGY_SYSTEM,
+            ),
+            base_agent,
+        )
+        try:
+            raw = model_gateway.generate_json(
+                prompt,
+                required_keys=["title", "markdown", "summary"],
+                schema=MarkdownResourceDraft,
+            )
+            draft = MarkdownResourceDraft.model_validate(raw)
+        except Exception as exc:
+            return (
+                f"文档生成失败，请稍后重试。",
+                AgentName.DOCUMENT.value,
+                {**common_metadata, "error": str(exc), "_failed": True},
+            )
+
     content = draft.markdown
-    metadata = {**common_metadata, "draft": draft.model_dump(mode="json")}
+    metadata = {**common_metadata, "draft": draft.model_dump(mode="json"), "two_stage": used_two_stage}
     return content, AgentName.DOCUMENT.value, metadata
 
 
@@ -545,39 +649,92 @@ def _generate_reading(
     profile, knowledge_point, subject, difficulty, rag_hits, common_metadata, base_agent
 ) -> tuple[str, str, dict]:
     tc = _get_teaching_context(profile, knowledge_point)
-    prompt = _apply_base_agent_prompt(
-        _build_prompt(
-            "resource_reading_v1",
-            "生成深度阅读材料，侧重叙述、案例分析和思考。\n"
-            "返回 JSON：{title, markdown, summary, key_concepts, discussion_questions, references}",
-            {
-                "student_profile": _profile_summary(profile),
-                "knowledge_point": knowledge_point,
-                "subject": subject,
-                "difficulty": str(tc["teaching_params"].get("difficulty", difficulty)),
-                "rag_context": rag_hits,
-                **tc,
-            },
-            strategy_prompt=READING_STRATEGY_SYSTEM,
-        ),
-        base_agent,
-    )
+    effective_diff = str(tc["teaching_params"].get("difficulty", difficulty))
+    used_two_stage = False
 
-    try:
-        raw = model_gateway.generate_json(
-            prompt,
-            required_keys=["title", "markdown", "summary"],
-            schema=ReadingDraft,
+    # Stage 1: Generate outline
+    outline = _generate_outline(knowledge_point, subject, effective_diff, profile, rag_hits, base_agent, "reading")
+
+    if outline and outline.sections:
+        # Stage 2: Fill each section with detailed content
+        section_specs = [
+            {"heading": s.heading, "key_points": s.key_points, "description": s.description}
+            for s in outline.sections
+        ]
+        prompt = _apply_base_agent_prompt(
+            _build_prompt(
+                "resource_reading_v2",
+                "根据大纲逐章节生成深度阅读内容，侧重叙述、案例分析和思考。\n"
+                "返回 JSON：{sections: [{heading, content}], key_concepts, discussion_questions, references}",
+                {
+                    "student_profile": _profile_summary(profile),
+                    "knowledge_point": knowledge_point,
+                    "subject": subject,
+                    "difficulty": effective_diff,
+                    "outline": section_specs,
+                    "rag_context": rag_hits,
+                    **tc,
+                },
+                strategy_prompt=READING_STRATEGY_SYSTEM,
+            ),
+            base_agent,
         )
-    except Exception as exc:
-        return (
-            "阅读材料生成失败，请稍后重试。",
-            AgentName.DOCUMENT.value,
-            {**common_metadata, "error": str(exc), "_failed": True},
+        try:
+            raw = model_gateway.generate_json(
+                prompt,
+                required_keys=["sections"],
+            )
+            sections = raw.get("sections", [])
+            markdown_content = _assemble_sections(sections, knowledge_point)
+            draft = ReadingDraft(
+                title=outline.title,
+                markdown=markdown_content,
+                summary=outline.summary,
+                key_concepts=raw.get("key_concepts", []),
+                discussion_questions=raw.get("discussion_questions", []),
+                references=raw.get("references", []),
+            )
+            used_two_stage = True
+        except Exception:
+            draft = None
+    else:
+        draft = None
+
+    # Fallback: single-stage generation
+    if draft is None:
+        prompt = _apply_base_agent_prompt(
+            _build_prompt(
+                "resource_reading_v1",
+                "生成深度阅读材料，侧重叙述、案例分析和思考。\n"
+                "返回 JSON：{title, markdown, summary, key_concepts, discussion_questions, references}",
+                {
+                    "student_profile": _profile_summary(profile),
+                    "knowledge_point": knowledge_point,
+                    "subject": subject,
+                    "difficulty": effective_diff,
+                    "rag_context": rag_hits,
+                    **tc,
+                },
+                strategy_prompt=READING_STRATEGY_SYSTEM,
+            ),
+            base_agent,
         )
-    draft = ReadingDraft.model_validate(raw)
+        try:
+            raw = model_gateway.generate_json(
+                prompt,
+                required_keys=["title", "markdown", "summary"],
+                schema=ReadingDraft,
+            )
+            draft = ReadingDraft.model_validate(raw)
+        except Exception as exc:
+            return (
+                "阅读材料生成失败，请稍后重试。",
+                AgentName.DOCUMENT.value,
+                {**common_metadata, "error": str(exc), "_failed": True},
+            )
+
     content = draft.markdown
-    metadata = {**common_metadata, "draft": draft.model_dump(mode="json")}
+    metadata = {**common_metadata, "draft": draft.model_dump(mode="json"), "two_stage": used_two_stage}
     return content, AgentName.DOCUMENT.value, metadata
 
 

@@ -46,6 +46,14 @@ function App() {
     });
   }, []);
 
+  // Redirect to home if profile is incomplete (force diagnostic)
+  const ALLOWED_INCOMPLETE = ["/", "/profile-edit"];
+  useEffect(() => {
+    if (state.user && state.profile.completeness_score <= 0.5 && !ALLOWED_INCOMPLETE.includes(location.pathname)) {
+      navigate("/", { replace: true });
+    }
+  }, [state.user, state.profile.completeness_score, location.pathname]);
+
   const handleAuthSubmit = async (payload: {
     username: string;
     password: string;

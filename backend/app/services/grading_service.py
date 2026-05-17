@@ -6,6 +6,7 @@ from typing import Optional, Union
 import json
 from uuid import UUID
 
+from app.core.errors import ErrorCode, ServiceError
 from app.services.model_gateway import generate_json
 
 _GRADING_PROMPT = """你是一个专业的学习评估系统。请对比学生的答案和标准答案，给出评分和反馈。
@@ -41,6 +42,7 @@ def grade_answer(
 
     For choice questions, uses exact match.
     For all other types (blank, short_answer, programming, case_analysis), uses LLM.
+    Falls back to 50% credit if LLM grading fails (ported from OpenMAIC pattern).
     """
     if question_type == "choice":
         return _grade_exact(standard_answer, user_answer)
@@ -60,13 +62,22 @@ def grade_answer(
     try:
         result = generate_json(prompt, required_keys=["score", "is_correct", "feedback"])
         if "_model_mode" in result:
-            raise RuntimeError(f"评分服务降级: {result['_model_mode']}")
+            raise ServiceError(ErrorCode.GRADING_FAILED, f"评分服务降级: {result['_model_mode']}")
         result["score"] = max(0, min(100, int(result.get("score", 0))))
         result["is_correct"] = result["score"] >= 60
         result["_grading_method"] = "llm_semantic"
         return result
-    except Exception as exc:
-        raise RuntimeError(f"AI 评分失败: {exc}") from exc
+    except (ServiceError, Exception) as exc:
+        # Fallback: give 50% credit when LLM grading fails (OpenMAIC pattern)
+        return {
+            "score": 50,
+            "is_correct": False,
+            "feedback": "AI 评分暂时不可用，已给出基础分。请参考标准答案自行对照。",
+            "key_points_hit": [],
+            "key_points_missed": [],
+            "_grading_method": "fallback",
+            "_grading_error": str(exc),
+        }
 
 
 def _grade_exact(standard_answer: Union[str, dict, list], user_answer: Union[str, dict, list]) -> dict:
@@ -116,7 +127,8 @@ def grade_and_record(
     if knowledge_point:
         try:
             from app.services.profile_service import get_profile
-            from app.services.profile_eval_service import evaluate_knowledge_point, update_profile_dimensions
+            from app.services.profile_eval_service import evaluate_knowledge_point
+            from app.services.profile_event_service import ProfileEventType, emit_event
             from app.services.learning_record_service import create_learning_record
             from app.schemas.learning_record import LearningRecordCreate
 
@@ -127,7 +139,7 @@ def grade_and_record(
                     profile, knowledge_point,
                     quiz_accuracy=quiz_accuracy, total_questions=1,
                 )
-                update_profile_dimensions(user_id, knowledge_point, dim, conversation_id=conversation_id)
+                emit_event(user_id, ProfileEventType.EXERCISE_GRADE, {"knowledge_point": knowledge_point, "dimension": dim.model_dump()}, confidence=0.7)
 
             # 创建学习记录（含错题要点）
             key_points_missed = result.get("key_points_missed") or []

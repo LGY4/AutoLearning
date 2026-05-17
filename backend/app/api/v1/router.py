@@ -19,6 +19,7 @@ from app.api.v1 import (
     resources,
     system,
     tutor,
+    tts,
     video,
 )
 
@@ -42,5 +43,6 @@ api_router.include_router(recommendations.router, prefix="/recommendations", tag
 api_router.include_router(tutor.router, prefix="/tutor", tags=["tutor"], dependencies=_auth)
 api_router.include_router(knowledge.router, prefix="/knowledge", tags=["knowledge"], dependencies=_auth)
 api_router.include_router(system.router, prefix="/system", tags=["system"], dependencies=_auth)
+api_router.include_router(tts.router, prefix="/tts", tags=["tts"], dependencies=_auth)
 api_router.include_router(video.public_router, prefix="/video", tags=["video"])
 api_router.include_router(video.router, prefix="/video", tags=["video"], dependencies=_auth)

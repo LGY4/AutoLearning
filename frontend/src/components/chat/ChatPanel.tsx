@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useAppContext } from "../../context/AppContext";
-import { apiGet, apiPatch, apiPost, apiPostStream } from "../../api/client";
+import { apiGet, apiPatch, apiPost, apiPostStream, getFriendlyError } from "../../api/client";
 import { useRecordLearning } from "../../hooks/useRecordLearning";
 import { ChatMessage, type ChatMsg, type IntentResult, type TraceEntry } from "./ChatMessage";
 import { ChatInput } from "./ChatInput";
@@ -74,7 +74,7 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
     // End previous conversation to merge its profile back to master
     const prevId = prevConvIdRef.current;
     if (prevId && prevId !== state.selectedConversationId) {
-      apiPost(`/conversations/${prevId}/end`).catch(() => {});
+      apiPost(`/conversations/${prevId}/end`, {}).catch(() => {});
     }
     prevConvIdRef.current = state.selectedConversationId;
   }, [state.selectedConversationId]);
@@ -83,7 +83,7 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
     return () => {
       abortRef.current?.abort();
       if (prevConvIdRef.current) {
-        apiPost(`/conversations/${prevConvIdRef.current}/end`).catch(() => {});
+        apiPost(`/conversations/${prevConvIdRef.current}/end`, {}).catch(() => {});
       }
     };
   }, []);
@@ -106,13 +106,16 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
     try {
       let resultData: Record<string, unknown> | null = null;
 
+      let streamError: string | null = null;
       await apiPostStream("/learning/chat-stream", {
         user_id: user.id,
         message: content,
         conversation_id: state.selectedConversationId,
         base_agent_id: selectedBaseAgentId,
       }, (evt) => {
-        if (evt.type === "text_delta" && typeof (evt.data as Record<string, unknown>).content === "string") {
+        if (evt.type === "error") {
+          streamError = String((evt.data as Record<string, unknown>).message || "AI 服务暂时不可用，请重试");
+        } else if (evt.type === "text_delta" && typeof (evt.data as Record<string, unknown>).content === "string") {
           streamedContent += (evt.data as Record<string, unknown>).content;
           setMessages((prev) => prev.map((m) => m.id === streamMsg.id ? { ...m, content: streamedContent } : m));
         } else if (evt.type === "result") {
@@ -122,12 +125,52 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
 
       usedStreaming = true;
 
+      if (streamError) {
+        const errMsg = streamError;
+        setMessages((prev) => prev.map((m) =>
+          m.id === streamMsg.id ? { ...m, content: errMsg, streaming: false } : m
+        ));
+        dispatch({ type: "SET_LOADING", payload: false });
+        return;
+      }
+
       const res: IntentResult = resultData
-        ? { intent: "tutoring", confidence: 1.0, method: "streaming", result: resultData }
+        ? {
+            intent: String((resultData as Record<string, unknown>).intent || "tutoring"),
+            confidence: Number((resultData as Record<string, unknown>).confidence || 1.0),
+            method: "streaming",
+            result: (resultData as Record<string, unknown>).result as Record<string, unknown> || resultData,
+          }
         : { intent: "tutoring", confidence: 1.0, method: "streaming", result: { answer: streamedContent, markdown: streamedContent, question: content } };
 
       const finalMsg: ChatMsg = { id: streamMsg.id, role: "assistant", content: "", streaming: false, intentResult: res };
+
+      // Handle quiz_pending from streaming result
+      if (res.intent === "tutoring" && res.result.quiz_pending) {
+        finalMsg.onQuizComplete = (answerResult: IntentResult) => {
+          setMessages((prev) => prev.map((m) =>
+            m.id === streamMsg.id ? { ...m, intentResult: answerResult, onQuizComplete: undefined } : m,
+          ));
+          const ar = answerResult.result;
+          if (ar.updated_dimension) {
+            apiGet<StudentProfile>("/profiles/me")
+              .then((p) => dispatch({ type: "SET_PROFILE", payload: p }))
+              .catch(() => {});
+          }
+        };
+      }
+
       setMessages((prev) => prev.map((m) => (m.id === streamMsg.id ? finalMsg : m)));
+
+      // Sync global state for non-tutoring intents
+      const r = res.result;
+      if (res.intent === "resource_generation" && r.profile) {
+        dispatch({ type: "SET_PROFILE", payload: r.profile as StudentProfile });
+        if (r.path) dispatch({ type: "SET_PATH", payload: r.path as LearningPath });
+        if (r.resources) dispatch({ type: "SET_RESOURCES", payload: r.resources as LearningResource[] });
+        if (r.recommendations) dispatch({ type: "SET_RECOMMENDATIONS", payload: r.recommendations as Recommendation[] });
+        if (r.conversation_id) dispatch({ type: "SET_SELECTED_CONVERSATION", payload: String(r.conversation_id) });
+      }
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
         dispatch({ type: "SET_LOADING", payload: false });
@@ -258,9 +301,9 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
         );
         return;
       }
-      const errMsg = err instanceof Error ? err.message : "请求失败";
+      const errMsg = err instanceof Error ? getFriendlyError(err.message) : "请求失败，请重试";
       setMessages((prev) =>
-        prev.map((m) => (m.id === streamMsg.id ? { ...m, content: `错误：${errMsg}`, streaming: false } : m))
+        prev.map((m) => (m.id === streamMsg.id ? { ...m, content: errMsg, streaming: false } : m))
       );
     } finally {
       dispatch({ type: "SET_LOADING", payload: false });
@@ -283,6 +326,7 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
 
     const trace: TraceEntry[] = [];
     let resultData: Record<string, unknown> | null = null;
+    let streamError: string | null = null;
 
     try {
       await apiPostStream("/learning/start-stream", {
@@ -291,7 +335,9 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
         conversation_id: state.selectedConversationId,
       }, (evt) => {
         const data = evt.data as Record<string, unknown>;
-        if (evt.type === "agent_step" && data.node) {
+        if (evt.type === "error") {
+          streamError = String(data.message || "学习流程执行失败，请重试");
+        } else if (evt.type === "agent_step" && data.node) {
           const entry: TraceEntry = {
             node: String(data.node),
             hint: String(data.hint || ""),
@@ -309,6 +355,14 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
           resultData = data;
         }
       }, controller.signal);
+
+      if (streamError) {
+        const errMsg = streamError;
+        setMessages((prev) => prev.map((m) => m.id === assistantMsg.id ? {
+          ...m, content: errMsg, streaming: false, trace: [...trace],
+        } : m));
+        return;
+      }
 
       // Pipeline complete — update global state
       if (resultData) {
@@ -334,8 +388,8 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
         setMessages((prev) => prev.map((m) => m.id === assistantMsg.id ? { ...m, content: m.content || "已停止", streaming: false } : m));
         return;
       }
-      const errMsg = err instanceof Error ? err.message : "请求失败";
-      setMessages((prev) => prev.map((m) => m.id === assistantMsg.id ? { ...m, content: `错误：${errMsg}`, streaming: false } : m));
+      const errMsg = err instanceof Error ? getFriendlyError(err.message) : "请求失败，请重试";
+      setMessages((prev) => prev.map((m) => m.id === assistantMsg.id ? { ...m, content: errMsg, streaming: false } : m));
     } finally {
       setMessages((prev) => prev.map((m) => m.id === assistantMsg.id && m.streaming ? { ...m, streaming: false } : m));
     }
@@ -380,6 +434,49 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
     setMode("pipeline");
   }, [user, input, state.profile, onCreateAgent, onSelectAgent, onModelConfig, onAuth]);
 
+  const TYPE_LABELS: Record<string, string> = {
+    document: "文档", mindmap: "思维导图", quiz: "测验", reading: "阅读",
+    video: "视频", animation: "动画", code_case: "代码实操", flowchart: "流程图",
+  };
+
+  const handleAction = useCallback((action: string, payload?: string) => {
+    if (action === "generate_resource" && payload) {
+      const [kp, resType] = payload.split("|");
+      const label = TYPE_LABELS[resType] || resType;
+      setInput(`请为「${kp}」生成${label}`);
+      setMode("pipeline");
+    } else if (action === "post_test" && payload) {
+      const msgId = `post-test-${Date.now()}`;
+      const streamMsg: ChatMsg = { id: msgId, role: "assistant", content: "", streaming: true };
+      setMessages((prev) => [...prev, streamMsg]);
+
+      apiPost<IntentResult>("/learning/chat/post-test", {
+        knowledge_point: payload,
+        conversation_id: state.selectedConversationId,
+      }).then((res) => {
+        const finalMsg: ChatMsg = { id: msgId, role: "assistant", content: "", streaming: false, intentResult: res };
+        if (res.result.quiz_pending) {
+          finalMsg.onQuizComplete = (answerResult: IntentResult) => {
+            setMessages((prev) => prev.map((m) =>
+              m.id === msgId ? { ...m, intentResult: answerResult, onQuizComplete: undefined } : m,
+            ));
+            const ar = answerResult.result;
+            if (ar.updated_dimension) {
+              apiGet<StudentProfile>("/profiles/me")
+                .then((p) => dispatch({ type: "SET_PROFILE", payload: p }))
+                .catch(() => {});
+            }
+          };
+        }
+        setMessages((prev) => prev.map((m) => (m.id === msgId ? finalMsg : m)));
+      }).catch(() => {
+        setMessages((prev) => prev.map((m) =>
+          m.id === msgId ? { ...m, content: "生成测试失败，请重试", streaming: false } : m
+        ));
+      });
+    }
+  }, [state.selectedConversationId, dispatch]);
+
   // Extract pipeline trace from the latest streaming/completed assistant message
   const pipelineTrace = messages.reduce<TraceEntry[]>((acc, m) => {
     if (m.trace && m.trace.length > acc.length) return m.trace;
@@ -421,7 +518,7 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
           </div>
         )}
         {messages.map((msg) => (
-          <ChatMessage key={msg.id} message={msg} />
+          <ChatMessage key={msg.id} message={{ ...msg, onAction: handleAction }} />
         ))}
         <div ref={messagesEndRef} />
       </div>

@@ -45,6 +45,32 @@ function injectModelOverrides(body: unknown): unknown {
 
 const REQUEST_TIMEOUT_MS = 60_000;
 
+const FRIENDLY_ERRORS: Record<string, string> = {
+  LLM_TIMEOUT: "AI 服务响应超时，请稍后重试",
+  LLM_RATE_LIMITED: "AI 服务繁忙，请稍后再试",
+  LLM_AUTH_FAILED: "AI 服务认证失败，请检查模型配置",
+  LLM_CIRCUIT_OPEN: "AI 服务暂时不可用，请稍后重试",
+  LLM_GENERATION_FAILED: "AI 生成失败，请重试",
+  KNOWLEDGE_BASE_EMPTY: "知识库尚未导入，部分功能受限",
+  RESOURCE_GENERATION_FAILED: "资源生成失败，请重试",
+  PROFILE_NOT_FOUND: "学习档案未找到，请先完成入学诊断",
+  GRADING_FAILED: "评分服务暂时不可用，请重试",
+  INTERNAL_ERROR: "服务器内部错误，请稍后重试",
+};
+
+export function getFriendlyError(detail: string, errorCode?: string): string {
+  if (errorCode && FRIENDLY_ERRORS[errorCode]) return FRIENDLY_ERRORS[errorCode];
+  // Check if detail itself is a known error code
+  if (FRIENDLY_ERRORS[detail]) return FRIENDLY_ERRORS[detail];
+  // Filter out technical messages
+  if (detail.includes("circuit breaker")) return FRIENDLY_ERRORS.LLM_CIRCUIT_OPEN;
+  if (detail.includes("timed out") || detail.includes("timeout")) return FRIENDLY_ERRORS.LLM_TIMEOUT;
+  if (detail.includes("API key")) return FRIENDLY_ERRORS.LLM_AUTH_FAILED;
+  // Return original if it looks user-friendly (Chinese, short)
+  if (/[一-鿿]/.test(detail) && detail.length < 100) return detail;
+  return "请求失败，请重试";
+}
+
 function timeoutSignal(existing?: AbortSignal): { signal: AbortSignal; cleanup: () => void } {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -60,6 +86,7 @@ async function handleResponse<T>(response: Response, path: string): Promise<T> {
       clearAccessToken();
     }
     let detail = `${response.status} ${path}`;
+    let errorCode: string | undefined;
     try {
       const body = await response.json();
       if (body?.detail) {
@@ -69,8 +96,9 @@ async function handleResponse<T>(response: Response, path: string): Promise<T> {
           detail = String(body.detail);
         }
       }
+      errorCode = body?.error_code;
     } catch { /* ignore */ }
-    throw new Error(detail);
+    throw new Error(getFriendlyError(detail, errorCode));
   }
   const json = await response.json();
   return json.data as T;
@@ -169,7 +197,14 @@ export async function apiPostStream(
     signal,
   });
   if (!response.ok || !response.body) {
-    throw new Error(`POST ${path} failed: ${response.status}`);
+    let detail = `POST ${path} failed: ${response.status}`;
+    let errorCode: string | undefined;
+    try {
+      const body = await response.json();
+      if (body?.detail) detail = String(body.detail);
+      errorCode = body?.error_code;
+    } catch { /* ignore */ }
+    throw new Error(getFriendlyError(detail, errorCode));
   }
 
   const reader = response.body.getReader();
@@ -216,4 +251,23 @@ export async function apiPostStream(
 
   buffer += decoder.decode();
   flush();
+}
+
+export async function apiTTS(text: string, voice?: string): Promise<Blob> {
+  const token = getAccessToken();
+  const headers: Record<string, string> = { "Content-Type": "application/json" };
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  const res = await fetch(`${API_PREFIX}/tts/synthesize`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ text, voice }),
+  });
+  if (!res.ok) {
+    const detail = res.headers.get("X-Error") || "";
+    if (res.status === 503 && detail.includes("Key")) {
+      throw new Error("TTS_NOT_CONFIGURED");
+    }
+    throw new Error(detail || `TTS 请求失败: ${res.status}`);
+  }
+  return res.blob();
 }

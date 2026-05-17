@@ -1,0 +1,198 @@
+[
+  {
+    "name": "profile_extract_v1",
+    "agent_name": "profile_agent",
+    "version": "v1",
+    "template": "从多轮对话中抽取并更新学生画像。\n\n必须返回以下JSON格式：\n{\n  \"basic_info\": {\"major\": \"专业\", \"grade\": \"年级\", \"school\": \"学校或null\"},\n  \"knowledge_profile\": {\n    \"overall_level\": \"beginner/intermediate/advanced\",\n    \"known_topics\": [\"已掌握知识点\"],\n    \"weak_topics\": [\"薄弱知识点\"],\n    \"mastery_level\": {\"知识点\": 0.0-1.0},\n    \"topic_dimensions\": {\n      \"知识点名\": {\"mastery\": \"low/mid/high\", \"application\": \"low/mid/high\", \"memory\": \"low/mid/high\", \"understanding\": \"low/mid/high\"}\n    }\n  },\n  \"learning_goal\": {\"current_goal\": \"当前学习目标\", \"target_course\": \"目标课程\", \"target_level\": \"project_practice/interview_prep/exam_prep\"},\n  \"learning_preference\": {\"learning_style\": \"visual/reading/hands-on/mixed\", \"resource_preference\": {\"类型\": 0.0-1.0}, \"difficulty_preference\": \"step_by_step/challenge\"},\n  \"learning_behavior\": {\"average_study_minutes\": 数字, \"active_period\": \"morning/afternoon/evening\", \"completion_rate\": 0.0-1.0, \"recent_scores\": [], \"last_knowledge_point\": \"最近学习的知识点或null\"},\n  \"cognitive_profile\": {\"cognitive_style\": \"visual/verbal/mixed\", \"abstract_understanding\": \"low/medium/high\", \"hands_on_ability\": \"low/medium/high\", \"reading_patience\": \"low/medium/high\"},\n  \"completeness_score\": 0.0-1.0之间的值,\n  \"confidence_score\": 0.0-1.0之间的值,\n  \"update_reason\": \"更新原因\"\n}\n\n四维度评估规则（对每个知识点）：\n- mastery：知道概念定义和基本用法 → mid；能独立使用 → high\n- application：能在实际问题中使用 → mid；能举一反三 → high\n- memory：间隔复习仍记得 → mid；长期不忘 → high\n- understanding：能解释原理 → mid；能迁移应用 → high\n\n学生原型参考（如有）：\n{archetype_hint}\n\n注意：completeness_score和confidence_score必须是0到1之间的小数，不要用百分比。",
+    "variables": ["conversation", "previous_profile", "learning_behavior", "archetype_hint"]
+  },
+  {
+    "name": "path_planning_v1",
+    "agent_name": "path_agent",
+    "version": "v1",
+    "template": "根据学生画像、学习目标和薄弱点规划个性化学习路径。\n\n画像信息：\n- 整体水平：{overall_level}\n- 学习风格：{learning_style}\n- 薄弱知识点：{weak_topics}\n- 已掌握知识点：{known_topics}\n- 教学策略：{teaching_note}\n\n必须返回以下JSON格式：\n{\n  \"title\": \"学习路径标题\",\n  \"path_type\": \"beginner/intermediate/advanced\",\n  \"strategy\": {\"approach\": \"策略描述\", \"estimated_total_minutes\": 总时长数字},\n  \"nodes\": [\n    {\n      \"knowledge_point\": \"知识点名称\",\n      \"status\": \"new/review/skip\",\n      \"estimated_minutes\": 预计分钟数,\n      \"recommended_resource_types\": [\"document\", \"quiz\", \"mindmap\", \"code_case\", \"video\"],\n      \"prerequisites\": [\"前置知识点\"],\n      \"reason\": \"安排原因\"\n    }\n  ]\n}\n\n要求：\n1. 薄弱知识点优先安排（weak_topics）\n2. 已掌握知识点（mastery=high）标记为review或skip\n3. 检查前置依赖关系\n4. 每个节点推荐2-3种资源类型\n5. 根据学习风格调整资源类型推荐",
+    "variables": ["goal", "subject", "profile", "weak_topics", "overall_level", "learning_style", "known_topics", "teaching_note"]
+  },
+  {
+    "name": "resource_document_v1",
+    "agent_name": "document_agent",
+    "version": "v1",
+    "template": "面向学生画像生成结构化文档资源。\n\n学生画像：\n- 整体水平：{overall_level}\n- 学习风格：{learning_style}\n- 该知识点四维度：{topic_dimension}\n- 教学策略：{teaching_note}\n\n参考知识库内容：\n{rag_context}\n\n知识框架（必须包含以下部分）：\n\n## 1. 概念定义（200字以内）\n- 一句话定义\n- 核心特征（3-5个要点）\n- 与相关概念的区别\n\n## 2. 原理讲解（500-800字）\n- 底层原理\n- 时间/空间复杂度分析\n- 关键公式或定理\n\n## 3. 代码示例\n- 包含完整注释\n- 包含测试用例\n\n## 4. 实际案例（2-3个）\n- 应用场景描述\n- 解决的问题\n\n## 5. 常见误区（3-5个）\n- 错误理解\n- 正确的理解方式\n\n## 6. 总结与下一步\n\n必须返回以下JSON格式：\n{\n  \"title\": \"文档标题\",\n  \"markdown\": \"完整的Markdown文档内容\",\n  \"summary\": \"一句话摘要\",\n  \"outline\": [\"章节1\", \"章节2\"],\n  \"examples\": [\"示例1\"],\n  \"common_mistakes\": [\"常见误区1\"],\n  \"next_steps\": [\"下一步建议1\"]\n}",
+    "variables": ["student_profile", "knowledge_point", "rag_context", "difficulty", "overall_level", "learning_style", "topic_dimension", "teaching_note"]
+  },
+  {
+    "name": "resource_reading_v1",
+    "agent_name": "document_agent",
+    "version": "v1",
+    "template": "生成深度阅读材料，侧重叙述、案例分析和思考。\n\n学生画像：\n- 整体水平：{overall_level}\n- 学习风格：{learning_style}\n- 该知识点四维度：{topic_dimension}\n\n参考知识库内容：\n{rag_context}\n\n与 document 的区别：\n- document 是结构化知识点文档（800-1500字），侧重概念定义和代码\n- reading 是深度阅读材料（2000-4000字），侧重叙述、案例分析和思考\n\n必须返回以下JSON格式：\n{\n  \"title\": \"阅读材料标题\",\n  \"markdown\": \"完整的Markdown阅读材料（2000-4000字）\",\n  \"summary\": \"一句话摘要\",\n  \"key_concepts\": [\"核心概念1\", \"核心概念2\"],\n  \"discussion_questions\": [\"讨论题1\", \"讨论题2\", \"讨论题3\"],\n  \"references\": [\"参考来源1\"]\n}\n\n内容结构：\n1. 引入：从实际问题或历史背景切入\n2. 核心叙述：用故事化的方式讲解概念\n3. 案例分析：1-2个深入的实际案例\n4. 延伸思考：与其他领域的联系\n5. 讨论题：开放性问题",
+    "variables": ["student_profile", "knowledge_point", "rag_context", "difficulty", "overall_level", "learning_style", "topic_dimension"]
+  },
+  {
+    "name": "resource_quiz_v1",
+    "agent_name": "quiz_agent",
+    "version": "v1",
+    "template": "根据知识点和学生画像生成练习题。\n\n学生画像：\n- 整体水平：{overall_level}\n- 该知识点四维度：{topic_dimension}\n- 出题策略：{quiz_strategy}\n\n参考知识库内容：\n{rag_context}\n\n出题要求：\n- 题目数量：{total_questions}题\n- 难度分布：{difficulty_distribution}\n- 题型分布：{type_distribution}\n- 重点评估维度：{dimension_focus}\n\n四维度出题对应：\n- 测mastery：选择题、填空题（概念是否知道）\n- 测application：编程题、案例分析题（能否实际使用）\n- 测understanding：简答题（要求解释原理）\n- 测memory：间隔出现旧知识点的题目\n\n必须返回以下JSON格式：\n{\n  \"title\": \"题库标题\",\n  \"overview\": \"题库概述\",\n  \"questions\": [\n    {\n      \"type\": \"choice/fill_blank/code/case_analysis/short_answer\",\n      \"difficulty\": \"easy/medium/hard\",\n      \"dimension_test\": \"mastery/application/memory/understanding\",\n      \"stem\": \"题目内容\",\n      \"options\": [\"选项A\", \"选项B\", \"选项C\", \"选项D\"],\n      \"answer\": \"正确答案\",\n      \"explanation\": \"解析\"\n    }\n  ],\n  \"scoring_rules\": \"评分规则\"\n}",
+    "variables": ["knowledge_point", "rag_context", "difficulty", "overall_level", "topic_dimension", "quiz_strategy", "total_questions", "difficulty_distribution", "type_distribution", "dimension_focus"]
+  },
+  {
+    "name": "resource_mindmap_v1",
+    "agent_name": "mindmap_agent",
+    "version": "v1",
+    "template": "生成 Markmap 格式的思维导图。\n\n学生画像：\n- 整体水平：{overall_level}\n- 学习风格：{learning_style}\n- 该知识点四维度：{topic_dimension}\n\n参考知识库内容：\n{rag_context}\n\nMarkmap 格式规则：\n- 一级标题用 # （只有一个，中心节点）\n- 二级标题用 ## （3-6个主要分支）\n- 三级标题用 ### （子节点）\n- 四级标题用 #### （细节，可选）\n- 每层 3-6 个子节点，总深度 3-4 层\n- 节点文字简洁（10-20字）\n\n必须返回以下JSON格式：\n{\n  \"title\": \"思维导图标题\",\n  \"mindmap_markdown\": \"# 中心主题\\n## 分支1\\n### 子节点1\\n### 子节点2\\n## 分支2\\n### 子节点3\",\n  \"summary\": \"一句话摘要\",\n  \"key_branches\": [\"分支1\", \"分支2\", \"分支3\"]\n}\n\n重要：mindmap_markdown 必须使用 Markdown 标题语法（# ## ###），不要用列表语法或 JSON 结构。",
+    "variables": ["student_profile", "knowledge_point", "subject", "rag_context", "difficulty", "overall_level", "learning_style", "topic_dimension"]
+  },
+  {
+    "name": "resource_video_v1",
+    "agent_name": "video_agent",
+    "version": "v1",
+    "template": "生成教学视频分镜脚本。\n\n学生画像：\n- 整体水平：{overall_level}\n- 学习风格：{learning_style}\n- 教学策略：{teaching_note}\n- 资源类型：{resource_type}\n\n参考知识库内容：\n{rag_context}\n\n分镜规则：\n- 总共 5-8 个镜头\n- 第1个镜头：引入/问题提出（15-30秒）\n- 中间镜头：核心概念讲解（每个30-60秒）\n- 最后1个镜头：总结/回顾（15-30秒）\n- 每个镜头必须有具体的画面描述和讲解旁白\n- image_prompt 用英文，描述具体的教学画面\n\n必须返回以下JSON格式：\n{\n  \"title\": \"视频标题\",\n  \"total_seconds\": 180,\n  \"scenes\": [\n    {\n      \"frame\": 1,\n      \"duration_seconds\": 30,\n      \"visual_description\": \"画面描述\",\n      \"narration\": \"讲解旁白\",\n      \"image_prompt\": \"English prompt for AI image generation\"\n    }\n  ],\n  \"summary\": \"一句话摘要\",\n  \"key_points\": [\"核心要点1\"]\n}\n\n重要：image_prompt 必须用英文，描述具体的教学画面。",
+    "variables": ["student_profile", "knowledge_point", "subject", "rag_context", "difficulty", "resource_type", "overall_level", "learning_style", "teaching_note"]
+  },
+  {
+    "name": "resource_code_v1",
+    "agent_name": "code_agent",
+    "version": "v1",
+    "template": "生成可运行代码案例。\n\n学生画像：\n- 整体水平：{overall_level}\n- 该知识点四维度：{topic_dimension}\n- 教学策略：{teaching_note}\n\n参考知识库内容：\n{rag_context}\n\n代码规则：\n1. 代码必须完整可运行，不能有省略号或伪代码\n2. 包含详细注释（每3-5行代码一个注释）\n3. 包含测试用例或示例调用\n4. 运行说明必须具体（包含命令行指令）\n5. 检查点是\"修改代码后观察输出\"类型的思考题\n\n必须返回以下JSON格式：\n{\n  \"title\": \"代码标题\",\n  \"language\": \"python/java/cpp/javascript\",\n  \"code\": \"完整可运行的代码\",\n  \"run_instructions\": [\"运行步骤1\", \"运行步骤2\"],\n  \"explanation\": \"代码说明\",\n  \"checkpoints\": [{\"question\": \"检查问题\", \"expected_answer\": \"预期答案\"}]\n}\n\n代码必须完整可运行，包含详细注释。",
+    "variables": ["student_profile", "knowledge_point", "rag_context", "difficulty", "overall_level", "topic_dimension", "teaching_note"]
+  },
+  {
+    "name": "quality_check_v1",
+    "agent_name": "quality_agent",
+    "version": "v1",
+    "template": "检查资源质量。\n\n检查维度：\n1. 内容准确性：知识点是否正确\n2. 完整性：是否覆盖知识框架的所有部分\n3. 难度适配：是否与学生水平匹配\n4. 画像适配：是否符合学习风格和教学策略\n5. 可读性：排版、代码格式、图表清晰度\n6. 类型一致性：资源类型与实际内容是否匹配\n   - video 类型必须包含分镜脚本（scenes 数组）\n   - mindmap 类型必须包含 Markdown 标题层级结构（# ## ###）\n   - code_case 类型必须包含完整可运行代码\n   - document 类型必须包含概念定义和代码示例\n   - quiz 类型必须包含题目和答案\n   - 如果资源类型与内容不符，quality_score 扣 0.2\n\n必须返回以下JSON格式：\n{\n  \"quality_score\": 0.0-1.0,\n  \"feedback\": \"总体评价\",\n  \"strengths\": [\"优点1\"],\n  \"weaknesses\": [\"不足1\"],\n  \"suggestions\": [\"改进建议1\"],\n  \"difficulty_match\": true/false,\n  \"profile_match\": true/false,\n  \"type_consistency\": true/false\n}",
+    "variables": ["resource", "student_profile", "rag_context"]
+  },
+  {
+    "name": "recommendation_reason_v1",
+    "agent_name": "recommendation_agent",
+    "version": "v1",
+    "template": "根据画像和学习记录生成推荐。\n\n学生画像：\n- 整体水平：{overall_level}\n- 薄弱知识点：{weak_topics}\n- 学习风格：{learning_style}\n- 最近学习：{last_knowledge_point}\n\n推荐策略：\n1. 薄弱知识点优先推荐补强资源\n2. 已学知识点推荐复习资源（间隔复习）\n3. 根据学习风格推荐资源类型\n4. 根据路径规划推荐下一步内容\n\n必须返回以下JSON格式：\n{\n  \"recommendations\": [\n    {\n      \"resource_type\": \"document/quiz/mindmap/code_case/video\",\n      \"knowledge_point\": \"推荐知识点\",\n      \"reason\": \"推荐原因\",\n      \"priority\": \"high/medium/low\",\n      \"dimension_target\": \"mastery/application/memory/understanding\"\n    }\n  ]\n}\n\n输出3-5个推荐，每个推荐必须有明确的理由和目标维度。",
+    "variables": ["student_profile", "learning_record", "resource", "overall_level", "weak_topics", "learning_style", "last_knowledge_point"]
+  },
+  {
+    "name": "tutor_answer_v1",
+    "agent_name": "tutor_agent",
+    "version": "v1",
+    "template": "结合学生画像和RAG检索结果回答问题。\n\n学生画像：\n- 整体水平：{overall_level}\n- 该知识点四维度：{topic_dimension}\n- 学习风格：{learning_style}\n- 教学策略：{teaching_note}\n\n参考知识库检索结果：\n{references}\n\n画像适配：\n- beginner：用简单语言，多举例，避免专业术语\n- intermediate：适当深度，给出原理和应用\n- advanced：简洁精准，给进阶内容\n- visual：多用类比、图解描述\n- hands-on：多给代码示例\n- understanding=low：多解释\"为什么\"，给出原理图解\n- memory=low：用类比帮助记忆，给出总结框\n\n必须返回以下JSON格式：\n{\n  \"answer\": \"简短回答\",\n  \"markdown\": \"详细的Markdown格式解答\",\n  \"next_step\": \"下一步学习建议\",\n  \"references\": [{\"title\": \"参考来源\", \"source\": \"来源\"}],\n  \"diagram_prompt\": \"图解提示词或null\",\n  \"key_points\": [\"核心要点1\", \"核心要点2\"]\n}\n\n回答要结合学生薄弱点针对性讲解。",
+    "variables": ["question", "knowledge_point", "subject", "student_profile", "references", "overall_level", "topic_dimension", "learning_style", "teaching_note"]
+  },
+  {
+    "name": "resource_flowchart_v1",
+    "agent_name": "flowchart_agent",
+    "version": "v1",
+    "template": "面向学生画像生成 draw.io XML 格式的教学流程图。\n\n学生画像：\n- 整体水平：{overall_level}\n- 学习风格：{learning_style}\n- 该知识点四维度：{topic_dimension}\n- 教学策略：{teaching_note}\n\n参考知识库内容：\n{rag_context}\n\n生成要求：\n1. 流程图展示 {knowledge_point} 的核心流程或算法步骤\n2. 使用 draw.io mxCell XML 格式\n3. 只输出 mxCell 元素，不要输出 mxfile/mxGraphModel/root 标签\n4. 节点 id 从 2 开始，所有元素 parent=\"1\"\n5. 坐标范围：x:0-800, y:0-600\n6. 节点 5-15 个，文字简洁（10-15字）\n\n常用样式：\n- 圆角矩形（步骤）：rounded=1;whiteSpace=wrap;html=1;\n- 菱形（判断）：rhombus;whiteSpace=wrap;html=1;\n- 圆形（开始/结束）：ellipse;whiteSpace=wrap;html=1;\n- 带颜色：fillColor=#dae8fc;strokeColor=#6c8ebf;\n- 连线：endArrow=classic;html=1;\n\n必须返回以下JSON格式：\n{\n  \"title\": \"流程图标题\",\n  \"drawio_xml\": \"<mxCell .../>的XML字符串\",\n  \"summary\": \"一句话摘要\",\n  \"node_count\": 节点数量\n}",
+    "variables": ["student_profile", "knowledge_point", "subject", "rag_context", "difficulty", "overall_level", "learning_style", "topic_dimension", "teaching_note"]
+  },
+  {
+    "name": "intent_classify_v1",
+    "agent_name": "master_agent",
+    "version": "v1",
+    "template": "你是意图分类器。根据用户消息，判断其意图类别。\n\n可选类别：\n- tutoring: 问答、解释概念、请教问题\n- resource_generation: 要求生成文档、视频、动画、图片、代码等学习资源\n- learning_path: 规划、查看、调整学习路径/计划\n- assessment: 评估学习掌握程度、查看学习报告、分析薄弱点\n- exercise: 要求出题、做练习、刷题、编程挑战\n- general_chat: 闲聊、打招呼、与学习无关的话题\n\n用户消息：{message}\n\n返回严格 JSON：{{\"intent\": \"类别名\", \"confidence\": 0.0-1.0, \"reason\": \"简短理由\"}}",
+    "variables": ["message"]
+  },
+  {
+    "name": "intent_parse_v1",
+    "agent_name": "intent_parser",
+    "version": "v1",
+    "template": "从以下用户消息中提取结构化意图信息。\n\n用户消息：{message}\n\n提取以下信息并返回严格JSON：\n{{\n  \"keywords\": [\"核心关键词1\", \"关键词2\"],\n  \"real_need\": \"用户的真实需求（一句话）\",\n  \"resource_preferences\": [\"document\", \"quiz\", \"mindmap\", \"code\", \"video\"],\n  \"difficulty_signal\": \"easy/medium/hard或null\",\n  \"subject\": \"学科名称或null\",\n  \"knowledge_point\": \"核心知识点或null\",\n  \"confidence\": 0.0-1.0\n}}\n\n规则：\n1. keywords：提取2-5个核心关键词，去掉停用词\n2. real_need：用户真正想要什么（不是字面意思，而是深层需求）\n3. resource_preferences：根据消息内容推断用户想要的资源类型\n4. difficulty_signal：根据用词推断难度需求\n5. subject：学科名称\n6. knowledge_point：最核心的知识点",
+    "variables": ["message"]
+  },
+  {
+    "name": "grading_semantic_v1",
+    "agent_name": "grading_agent",
+    "version": "v1",
+    "template": "你是一个专业的学习评估系统。请对比学生的答案和标准答案，给出评分和反馈。\n\n## 题目信息\n- 题目类型: {question_type}\n- 题干: {stem}\n- 标准答案: {standard_answer}\n- 解析: {explanation}\n\n## 学生答案\n{user_answer}\n\n## 评分要求\n请以JSON格式返回:\n{{\n  \"score\": 0-100的整数,\n  \"is_correct\": true/false（60分及以上为true）,\n  \"feedback\": \"具体的反馈和改进建议，不超过100字\",\n  \"key_points_hit\": [\"学生答对的关键点\"],\n  \"key_points_missed\": [\"学生遗漏的关键点\"]\n}}",
+    "variables": ["question_type", "stem", "standard_answer", "explanation", "user_answer"]
+  },
+  {
+    "name": "diagnostic_quick_v1",
+    "agent_name": "diagnostic_agent",
+    "version": "v1",
+    "template": "你是一个教育诊断专家。学生已提供身份信息，只需 {num_questions} 道题快速定位水平。\n\n学生信息：\n- 专业：{major}\n- 年级：{grade}\n- 学习目标：{goal}\n- 目标课程：{subject}\n\n要求：\n1. 第1题：基础概念（判断是否学过）—— 测 mastery\n2. 第2题：理解应用（判断是否理解原理）—— 测 understanding\n3. 第3题：综合分析/编程（判断能否实际使用）—— 测 application\n每题4选项，仅1个正确答案。标注所属知识点和难度(1-3)。\n\n返回严格JSON：\n{{\n  \"knowledge_points\": [\"知识点1\", \"知识点2\", \"知识点3\"],\n  \"questions\": [\n    {{\n      \"id\": 1,\n      \"topic\": \"知识点名称\",\n      \"difficulty\": 1,\n      \"dimension_test\": \"mastery\",\n      \"question\": \"题目内容\",\n      \"options\": [\"A. ...\", \"B. ...\", \"C. ...\", \"D. ...\"],\n      \"answer\": \"A\",\n      \"explanation\": \"解析\"\n    }}\n  ]\n}}",
+    "variables": ["major", "grade", "goal", "subject", "num_questions"]
+  },
+  {
+    "name": "diagnostic_kp_v1",
+    "agent_name": "diagnostic_agent",
+    "version": "v1",
+    "template": "你是一个教育诊断专家。针对以下知识点，生成 {num_questions} 道诊断题，快速评估学生的掌握水平。\n\n知识点：{knowledge_point}\n学科：{subject}\n学生水平：{overall_level}\n\n要求：\n1. 第1题：基础概念（判断是否学过）—— 测 mastery，难度1\n2. 第2题：理解应用（判断是否理解原理）—— 测 understanding，难度2\n3. 第3题：综合分析（判断能否实际使用）—— 测 application，难度3\n每题4选项，仅1个正确答案。题目必须紧扣该知识点，不要偏离。\n\n返回严格JSON：\n{{\n  \"knowledge_points\": [\"{knowledge_point}\"],\n  \"questions\": [\n    {{\n      \"id\": 1,\n      \"topic\": \"{knowledge_point}\",\n      \"difficulty\": 1,\n      \"dimension_test\": \"mastery\",\n      \"question\": \"题目内容\",\n      \"options\": [\"A. ...\", \"B. ...\", \"C. ...\", \"D. ...\"],\n      \"answer\": \"A\",\n      \"explanation\": \"解析\"\n    }}\n  ]\n}}",
+    "variables": ["knowledge_point", "subject", "overall_level", "num_questions"]
+  },
+  {
+    "name": "diagnostic_full_v1",
+    "agent_name": "diagnostic_agent",
+    "version": "v1",
+    "template": "你是一个教育诊断专家。根据学生信息，生成 {num_questions} 道诊断题，覆盖该学科的核心基础知识。\n\n学生信息：\n- 专业：{major}\n- 年级：{grade}\n- 学习目标：{goal}\n- 目标课程：{subject}\n\n要求：\n1. 题目覆盖该课程 3-5 个核心知识点\n2. 难度从易到难递进（基础概念 → 理解应用 → 综合分析）\n3. 每题 4 个选项，仅 1 个正确答案\n4. 每题标注所属知识点、难度(1-3)和测试维度(mastery/application/memory/understanding)\n\n返回严格 JSON：\n{{\n  \"knowledge_points\": [\"知识点1\", \"知识点2\", ...],\n  \"questions\": [\n    {{\n      \"id\": 1,\n      \"topic\": \"知识点名称\",\n      \"difficulty\": 1,\n      \"dimension_test\": \"mastery\",\n      \"question\": \"题目内容\",\n      \"options\": [\"A. ...\", \"B. ...\", \"C. ...\", \"D. ...\"],\n      \"answer\": \"A\",\n      \"explanation\": \"解析\"\n    }}\n  ]\n}}",
+    "variables": ["major", "grade", "goal", "subject", "num_questions"]
+  },
+  {
+    "name": "diagnostic_scoring_v1",
+    "agent_name": "diagnostic_agent",
+    "version": "v1",
+    "template": "你是一个教育评估专家。根据学生的诊断答题结果，评估其在四个维度上的水平。\n\n知识点：{knowledge_points}\n答题结果：{quiz_result}\n\n四维度定义：\n- mastery：知道概念定义和基本用法（低=不知道，中=知道但不熟，高=能独立使用）\n- application：能在实际问题中使用（低=不能，中=能模仿，高=能举一反三）\n- memory：间隔复习仍记得（低=易忘，中=偶尔忘，高=长期不忘）\n- understanding：能解释原理（低=不能，中=能简单解释，高=能深入解释并迁移）\n\n对每个知识点返回四维度评估。返回严格JSON：\n{{\n  \"dimensions\": {{\n    \"知识点名\": {{\n      \"mastery\": \"low/mid/high\",\n      \"application\": \"low/mid/high\",\n      \"memory\": \"low/mid/high\",\n      \"understanding\": \"low/mid/high\"\n    }}\n  }},\n  \"overall_level\": \"beginner/intermediate/advanced\",\n  \"confidence\": 0.0-1.0\n}}",
+    "variables": ["knowledge_points", "quiz_result"]
+  },
+  {
+    "name": "assessment_v1",
+    "agent_name": "assess_agent",
+    "version": "v1",
+    "template": "你是学习评估Agent。根据以下学生数据，生成多维度学习评估报告。\n\n当前评估阶段：{stage}（置信度基准：{base_confidence}）\n数据来源：{data_sources}\n\n学生数据：\n{data}\n\n请从以下维度评估，**根据数据量调整评估深度和置信度**：\n1. **knowledge_mastery** — 各知识点掌握程度（0-1分）\n2. **weak_points** — 薄弱点分析（topic, severity, suggestion）\n3. **learning_style** — 学习风格观察\n4. **progress** — 学习进度评估\n5. **review_recommendations** — 复习建议\n6. **next_suggestions** — 下一步行动（3-5个）\n7. **mastery_score** — 综合掌握度（0-1）\n\n返回严格 JSON：\n{{\n  \"knowledge_mastery\": {{\"topic_name\": 0.0-1.0}},\n  \"weak_points\": [{{\"topic\": \"...\", \"severity\": \"高/中/低\", \"suggestion\": \"...\"}}],\n  \"learning_style\": {{\"primary_style\": \"...\", \"analysis\": \"...\"}},\n  \"progress\": {{\"completion_rate\": 0.0, \"velocity\": \"...\", \"quality\": \"...\", \"analysis\": \"...\"}},\n  \"review_recommendations\": [{{\"topic\": \"...\", \"priority\": 1, \"method\": \"...\", \"reason\": \"...\"}}],\n  \"next_suggestions\": [\"...\"],\n  \"mastery_score\": 0.0-1.0,\n  \"overall_score\": 0.0-1.0,\n  \"summary\": \"一句话总结\"\n}}",
+    "variables": ["stage", "base_confidence", "data_sources", "data"]
+  },
+  {
+    "name": "general_chat_v1",
+    "agent_name": "general_agent",
+    "version": "v1",
+    "template": "你是一个友好的学习助手。请简短回复以下消息（不超过100字）：\n{message}",
+    "variables": ["message"]
+  },
+  {
+    "name": "vision_analyze_v1",
+    "agent_name": "vision_agent",
+    "version": "v1",
+    "template": "请分析这张图片中的内容，提取与学习相关的知识点、概念、公式或代码。用中文回答。",
+    "variables": []
+  },
+  {
+    "name": "diagnostic_adaptive_v1",
+    "agent_name": "diagnostic_agent",
+    "version": "v1",
+    "template": "你是一个教育诊断专家。针对知识点「{knowledge_point}」生成 1 道题。\n\n学科：{subject}\n学生当前水平：mastery={mastery}, understanding={understanding}, application={application}, memory={memory}\n已答对 {correct} 题，已答错 {wrong} 题。\n当前难度级别：{current_difficulty}（1=基础 2=中等 3=进阶）\n测试维度：{next_dim}\n\n要求：\n1. 题目必须紧扣该知识点\n2. 难度为 {current_difficulty} 级\n3. 测试维度为 {next_dim}\n4. 每题4选项，仅1个正确答案\n\n返回严格JSON：{{\n  \"id\": 1,\n  \"topic\": \"{knowledge_point}\",\n  \"difficulty\": {current_difficulty},\n  \"dimension_test\": \"{next_dim}\",\n  \"question\": \"题目内容\",\n  \"options\": [\"A. ...\", \"B. ...\", \"C. ...\", \"D. ...\"],\n  \"answer\": \"A\",\n  \"explanation\": \"解析\"\n}}",
+    "variables": ["knowledge_point", "subject", "mastery", "understanding", "application", "memory", "correct", "wrong", "current_difficulty", "next_dim"]
+  },
+  {
+    "name": "graph_build_v1",
+    "agent_name": "graph_builder_agent",
+    "version": "v1",
+    "template": "你是一个知识图谱构建专家。根据以下课程信息和资料，生成该课程的知识图谱。\n\n课程名称：{course_name}\n课程ID：{course_id}\n最大节点数：{max_nodes}\n\n参考资料：\n{context}\n\n{existing_context}\n\n要求：\n1. 提取 {max_nodes} 个以内的核心知识点作为节点\n2. 分析知识点之间的前置依赖关系（prerequisite）\n3. 每个节点标注所属层级 level（1=基础, 2=进阶, 3=高级）\n4. 每个知识点必须有来源依据（来自大纲、文档或知识库），不可无来源编造\n5. 合并重复或高度相似的知识点\n6. 为每个节点关联相关的 chunk_ids（如果能从知识库匹配）\n7. 生成推荐学习路径\n\n返回严格 JSON：{{\n  \"course_id\": \"{course_id}\",\n  \"course_name\": \"{course_name}\",\n  \"nodes\": [{{\"id\": \"唯一英文ID\", \"name\": \"知识点名称\", \"level\": 1, \"subject\": \"{course_name}\", \"chunk_ids\": [], \"depends_on\": [\"前置知识点ID\"], \"description\": \"简要描述\", \"tags\": [\"标签\"], \"source_reason\": \"来源说明\"}}],\n  \"edges\": [{{\"source\": \"前置节点ID\", \"target\": \"后续节点ID\", \"type\": \"prerequisite\"}}],\n  \"learning_paths\": {{\"beginner\": [\"基础节点ID列表\"], \"intermediate\": [\"进阶节点ID列表\"], \"advanced\": [\"高级节点ID列表\"]}}\n}}",
+    "variables": ["course_name", "course_id", "max_nodes", "context", "existing_context"]
+  },
+  {
+    "name": "video_remotion_v1",
+    "agent_name": "remotion_service",
+    "version": "v1",
+    "template": "根据以下知识点，生成教学视频的内容结构。\n\n知识点：{knowledge_point}\n学科：{subject}\n难度：{difficulty}\n\n返回严格 JSON 格式：{{\n  \"title\": \"视频标题\",\n  \"sections\": [{{\"heading\": \"小节标题\", \"content\": \"讲解内容（50-100字）\", \"highlight\": \"需要高亮的关键词\"}}]\n}}\n\n要求：\n1. 生成 3-5 个小节\n2. 每个小节内容简洁明了\n3. highlight 必须是 content 中出现的词\n4. 总体时长约 15-30 秒",
+    "variables": ["knowledge_point", "subject", "difficulty"]
+  },
+  {
+    "name": "video_script_v1",
+    "agent_name": "video_pipeline_service",
+    "version": "v1",
+    "template": "你是教学视频分镜脚本生成器。根据用户主题，生成 {num_scenes} 个场景的教学视频脚本。\n\n主题：{topic}\n学科：{subject}\n\n返回严格 JSON：{{\n  \"title\": \"视频标题（15字以内）\",\n  \"scenes\": [{{\"narration\": \"讲解旁白（50-100字，口语化，适合朗读）\", \"image_prompt\": \"English image prompt for AI illustration\", \"duration_hint\": 8}}]\n}}\n\n规则：\n1. 第1个场景引入问题，中间场景讲解核心概念，最后场景总结\n2. narration 必须口语化，适合 TTS 朗读\n3. image_prompt 用英文，描述教学画面\n4. duration_hint 为建议秒数（5-15）",
+    "variables": ["topic", "subject", "num_scenes"]
+  },
+  {
+    "name": "video_manim_v1",
+    "agent_name": "manim_service",
+    "version": "v1",
+    "template": "你是一个 Manim 动画代码生成器。根据以下知识点描述，生成完整的 Manim Scene 代码。\n\n知识点：{knowledge_point}\n学科：{subject}\n难度：{difficulty}\n\n要求：\n1. 使用 `from manim import *` 导入\n2. 定义一个名为 `GeneratedScene` 的 Scene 子类\n3. 在 `construct` 方法中实现动画\n4. 动画要直观展示知识点的核心概念\n5. 使用中文文字（用 Text(\"...\", font=\"Microsoft YaHei\")）\n6. 代码必须完整可运行，不要有省略号或占位符\n7. 时长控制在 10-30 秒\n\n只返回 Python 代码，不要任何解释。",
+    "variables": ["knowledge_point", "subject", "difficulty"]
+  },
+  {
+    "name": "tutor_stream_v1",
+    "agent_name": "tutor_agent",
+    "version": "v1",
+    "template": "你是一个个性化学习辅导助手。根据学生画像和参考内容回答问题。\n\n学生水平：{overall_level}\n学习风格：{style}\n知识点四维度：{topic_dim}\n\n参考知识库：\n{refs_text}\n\n请详细回答学生的问题。先给出思考过程，然后给出完整解答。",
+    "variables": ["overall_level", "style", "topic_dim", "refs_text"]
+  }
+]

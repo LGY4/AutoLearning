@@ -120,7 +120,11 @@ export function ProfileEditPage() {
           </div>
           <div className="stat-item">
             <span className="stat-label">完整度</span>
-            <span className="stat-value">{profile.completeness_score ? `${Math.round(profile.completeness_score)}%` : "—"}</span>
+            <span className="stat-value">{profile.completeness_score != null ? `${Math.round(profile.completeness_score * 100)}%` : "—"}</span>
+          </div>
+          <div className="stat-item">
+            <span className="stat-label">置信度</span>
+            <span className="stat-value">{profile.confidence_score != null ? `${Math.round(profile.confidence_score * 100)}%` : "—"}</span>
           </div>
         </div>
       </div>
@@ -168,6 +172,29 @@ export function ProfileEditPage() {
         </div>
       )}
 
+      {/* Cognitive profile */}
+      <div className="info-card" style={{ marginBottom: 24 }}>
+        <h3>认知特征</h3>
+        <div className="profile-stats">
+          <div className="stat-item">
+            <span className="stat-label">认知风格</span>
+            <span className="stat-value">{profile.cognitive_profile?.cognitive_style ?? "—"}</span>
+          </div>
+          <div className="stat-item">
+            <span className="stat-label">抽象理解</span>
+            <span className="stat-value">{DIM_LABELS[profile.cognitive_profile?.abstract_understanding] ?? profile.cognitive_profile?.abstract_understanding ?? "—"}</span>
+          </div>
+          <div className="stat-item">
+            <span className="stat-label">动手能力</span>
+            <span className="stat-value">{DIM_LABELS[profile.cognitive_profile?.hands_on_ability] ?? profile.cognitive_profile?.hands_on_ability ?? "—"}</span>
+          </div>
+          <div className="stat-item">
+            <span className="stat-label">阅读耐心</span>
+            <span className="stat-value">{DIM_LABELS[profile.cognitive_profile?.reading_patience] ?? profile.cognitive_profile?.reading_patience ?? "—"}</span>
+          </div>
+        </div>
+      </div>
+
       {/* Topic dimensions */}
       <div className="info-card">
         <h3>知识点四维度 ({topicEntries.length})</h3>
@@ -197,6 +224,27 @@ export function ProfileEditPage() {
         )}
       </div>
 
+      {/* Profile source */}
+      {profile.dynamic_update && (
+        <div className="info-card" style={{ marginTop: 24 }}>
+          <h3>画像来源</h3>
+          <div className="profile-stats">
+            <div className="stat-item">
+              <span className="stat-label">更新来源</span>
+              <span className="stat-value">{profile.dynamic_update.update_source ?? "—"}</span>
+            </div>
+            <div className="stat-item">
+              <span className="stat-label">更新原因</span>
+              <span className="stat-value">{profile.dynamic_update.update_reason ?? "—"}</span>
+            </div>
+            <div className="stat-item">
+              <span className="stat-label">最后更新</span>
+              <span className="stat-value">{profile.dynamic_update.last_updated_at ?? "—"}</span>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Version history */}
       {showVersions && (
         <div className="info-card" style={{ marginTop: 24 }}>
@@ -209,9 +257,9 @@ export function ProfileEditPage() {
                 <div className="version-item" key={v.profile_id}>
                   <span className="version-tag">v{v.version}</span>
                   <span className="version-info">
-                    完整度 {v.completeness_score ? `${Math.round(v.completeness_score)}%` : "—"}
+                    完整度 {v.completeness_score != null ? `${Math.round(v.completeness_score * 100)}%` : "—"}
                     {" · "}
-                    置信度 {v.confidence_score ? `${Math.round(v.confidence_score)}%` : "—"}
+                    置信度 {v.confidence_score != null ? `${Math.round(v.confidence_score * 100)}%` : "—"}
                   </span>
                 </div>
               ))}

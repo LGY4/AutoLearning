@@ -73,14 +73,50 @@ const langExtMap: Record<string, string> = {
 // ── Markdown Renderer ──────────────────────────────────────────────────────
 
 function MarkdownView({ content, title }: { content: string; title?: string }) {
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [ttsLoading, setTtsLoading] = useState(false);
+  const [ttsError, setTtsError] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    return () => { if (audioUrl) URL.revokeObjectURL(audioUrl); };
+  }, [audioUrl]);
+
   const handleDownload = () => {
     const filename = (title || "document").replace(/[<>:"/\\|?*]/g, "_").substring(0, 50) + ".md";
     downloadFile(content, filename, "text/markdown;charset=utf-8");
   };
 
+  const handleTTS = async () => {
+    if (audioUrl) {
+      audioRef.current?.paused ? audioRef.current.play() : audioRef.current?.pause();
+      return;
+    }
+    setTtsLoading(true);
+    setTtsError(null);
+    try {
+      const { apiTTS } = await import("../../api/client");
+      const plainText = content.replace(/[#*`\[\]()!>|-]/g, "").replace(/\n{2,}/g, "\n").trim().substring(0, 3000);
+      const blob = await apiTTS(plainText);
+      const url = URL.createObjectURL(blob);
+      setAudioUrl(url);
+      setTimeout(() => audioRef.current?.play(), 100);
+    } catch (e) {
+      setTtsError(e instanceof Error && e.message === "TTS_NOT_CONFIGURED" ? "TTS_NOT_CONFIGURED" : "语音生成失败");
+    } finally {
+      setTtsLoading(false);
+    }
+  };
+
   return (
     <div className="markdown-view">
       <div className="resource-toolbar">
+        <button className="resource-download-btn" onClick={handleTTS} type="button" disabled={ttsLoading}>
+          {ttsLoading ? "生成语音..." : audioUrl ? "播放/暂停" : "语音讲解"}
+        </button>
+        {ttsError && ttsError !== "TTS_NOT_CONFIGURED" && <span className="resource-tts-error">{ttsError}</span>}
+        {ttsError === "TTS_NOT_CONFIGURED" && <span className="resource-tts-hint">需配置 TTS API（模型配置中设置 API Key）</span>}
+        {audioUrl && <audio ref={audioRef} src={audioUrl} controls style={{ height: 28, maxWidth: 200 }} />}
         <button className="resource-download-btn" onClick={handleDownload} type="button">
           下载 Markdown
         </button>
@@ -709,6 +745,110 @@ function StoryboardView({ content }: { content: string }) {
   );
 }
 
+// ── Structured Document View (two-stage generated content) ─────────────────
+
+function StructuredDocumentView({ content, title, outline }: { content: string; title?: string; outline?: string[] }) {
+  // Split markdown by ## headings into sections
+  const sections = useMemo(() => {
+    const parts: Array<{ heading: string; body: string }> = [];
+    const regex = /^## (.+)$/gm;
+    let lastIdx = 0;
+    let lastHeading = "";
+    const matches = [...content.matchAll(regex)];
+
+    if (matches.length === 0) {
+      return [{ heading: "", body: content }];
+    }
+
+    // Content before first heading
+    if (matches[0].index > 0) {
+      const preamble = content.slice(0, matches[0].index).trim();
+      if (preamble) parts.push({ heading: "", body: preamble });
+    }
+
+    for (let i = 0; i < matches.length; i++) {
+      const start = matches[i].index + matches[i][0].length;
+      const end = i + 1 < matches.length ? matches[i + 1].index : content.length;
+      parts.push({
+        heading: matches[i][1].trim(),
+        body: content.slice(start, end).trim(),
+      });
+    }
+    return parts;
+  }, [content]);
+
+  const [audioUrl, setAudioUrl] = useState<string | null>(null);
+  const [ttsLoading, setTtsLoading] = useState(false);
+  const [ttsError, setTtsError] = useState<string | null>(null);
+  const audioRef = useRef<HTMLAudioElement>(null);
+
+  useEffect(() => {
+    return () => { if (audioUrl) URL.revokeObjectURL(audioUrl); };
+  }, [audioUrl]);
+
+  const handleTTS = async () => {
+    if (audioUrl) {
+      audioRef.current?.paused ? audioRef.current.play() : audioRef.current?.pause();
+      return;
+    }
+    setTtsLoading(true);
+    setTtsError(null);
+    try {
+      const { apiTTS } = await import("../../api/client");
+      const plainText = content.replace(/[#*`\[\]()!>|-]/g, "").replace(/\n{2,}/g, "\n").trim().substring(0, 3000);
+      const blob = await apiTTS(plainText);
+      const url = URL.createObjectURL(blob);
+      setAudioUrl(url);
+      setTimeout(() => audioRef.current?.play(), 100);
+    } catch (e) {
+      setTtsError(e instanceof Error && e.message === "TTS_NOT_CONFIGURED" ? "TTS_NOT_CONFIGURED" : "语音生成失败");
+    } finally {
+      setTtsLoading(false);
+    }
+  };
+
+  const handleDownload = () => {
+    const filename = (title || "document").replace(/[<>:"/\\|?*]/g, "_").substring(0, 50) + ".md";
+    downloadFile(content, filename, "text/markdown;charset=utf-8");
+  };
+
+  return (
+    <div className="markdown-view">
+      <div className="resource-toolbar">
+        <button className="resource-download-btn" onClick={handleTTS} type="button" disabled={ttsLoading}>
+          {ttsLoading ? "生成语音..." : audioUrl ? "播放/暂停" : "语音讲解"}
+        </button>
+        {ttsError && ttsError !== "TTS_NOT_CONFIGURED" && <span className="resource-tts-error">{ttsError}</span>}
+        {ttsError === "TTS_NOT_CONFIGURED" && <span className="resource-tts-hint">需配置 TTS API（模型配置中设置 API Key）</span>}
+        {audioUrl && <audio ref={audioRef} src={audioUrl} controls style={{ height: 28, maxWidth: 200 }} />}
+        <button className="resource-download-btn" onClick={handleDownload} type="button">
+          下载 Markdown
+        </button>
+      </div>
+      {outline && outline.length > 0 && (
+        <div className="structured-outline">
+          <span className="structured-outline-label">大纲：</span>
+          {outline.map((h, i) => (
+            <a key={i} href={`#section-${i}`} className="structured-outline-item">{h}</a>
+          ))}
+        </div>
+      )}
+      <div className="structured-sections">
+        {sections.map((sec, i) => (
+          <details key={i} className="structured-section" id={`section-${i}`} open={i < 2}>
+            <summary className="structured-section-header">
+              {sec.heading || title || "内容"}
+            </summary>
+            <div className="structured-section-body">
+              <ReactMarkdown remarkPlugins={[remarkGfm]}>{sec.body}</ReactMarkdown>
+            </div>
+          </details>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ── Main Renderer ──────────────────────────────────────────────────────────
 
 export function ResourceRenderer({ resource }: Props) {
@@ -752,6 +892,10 @@ export function ResourceRenderer({ resource }: Props) {
   if (resource.resource_type === "video" || resource.resource_type === "animation") {
     return <StoryboardView content={resource.content} />;
   }
-  // document, reading, and default
+  // document, reading — use structured view for two-stage content
+  if ((resource.resource_type === "document" || resource.resource_type === "reading") && resource.metadata?.two_stage) {
+    const outline = (resource.metadata?.draft as Record<string, unknown>)?.outline as string[] | undefined;
+    return <StructuredDocumentView content={resource.content} title={resource.title} outline={outline} />;
+  }
   return <MarkdownView content={resource.content} title={resource.title} />;
 }

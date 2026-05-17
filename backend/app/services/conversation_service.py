@@ -325,10 +325,5 @@ def as_profile_conversation(session: ConversationSession) -> List[Dict[str, str]
 
 
 def end_conversation(conversation_id: UUID) -> bool:
-    """Merge conversation profile back to master profile."""
-    session = get_conversation(conversation_id)
-    if not session or not session.profile_id:
-        return False
-    from app.repositories.vertical_loop_repository import repository
-    repository.merge_conversation_profile(session.profile_id, session.user_id)
+    """No-op: events now write directly to master profile."""
     return True

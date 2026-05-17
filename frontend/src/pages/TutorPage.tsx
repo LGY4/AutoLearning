@@ -1,7 +1,7 @@
 import { useState, useCallback } from "react";
 import { Button, Input, Tag } from "antd";
 import { Search, Send } from "lucide-react";
-import { apiPost } from "../api/client";
+import { apiPost, getFriendlyError } from "../api/client";
 import { useAppContext } from "../context/AppContext";
 
 interface TutorMessage {
@@ -93,7 +93,7 @@ export function TutorPage() {
       const errMsg: TutorMessage = {
         id: crypto.randomUUID(),
         role: "assistant",
-        content: `请求失败：${err instanceof Error ? err.message : "未知错误"}`,
+        content: err instanceof Error ? getFriendlyError(err.message) : "请求失败，请重试",
       };
       setMessages((prev) => [...prev, errMsg]);
     } finally {

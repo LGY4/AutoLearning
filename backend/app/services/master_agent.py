@@ -188,7 +188,10 @@ def route_message(
                 metadata={"rag_references": result.get("rag_references", [])},
             )
             # Add resource recommendation via adaptive service
-            kp = knowledge_point or message[:30]
+            kp = knowledge_point
+            if not kp:
+                from app.services.intent_parser import parse_intent
+                kp = parse_intent(message).knowledge_point
             from app.services import adaptive_service
             update = adaptive_service.post_learning_update(user_id=user_id, knowledge_point=kp, conversation_id=conversation_id)
             result["resource_recommendation"] = {
@@ -206,6 +209,10 @@ def route_message(
             }
 
         elif intent == Intent.EXERCISE:
+            session = conversation_service.append_message(
+                user_id, role="user", content=message,
+                conversation_id=conversation_id, intent="exercise",
+            )
             from app.services import agent_runtime
             from app.core.enums import ResourceType
             resource = agent_runtime.build_learning_resource(
@@ -215,6 +222,11 @@ def route_message(
                 resource_type=ResourceType.QUIZ,
                 difficulty="medium",
                 profile=None,
+            )
+            conversation_service.append_message(
+                user_id, role="assistant", content=f"已生成练习：{resource.title}",
+                conversation_id=session.conversation_id, intent="exercise",
+                metadata={"resource_id": str(resource.resource_id)},
             )
             return {
                 "intent": intent.value,
@@ -226,9 +238,14 @@ def route_message(
                     "content": resource.content,
                     "resource_type": resource.resource_type.value,
                 },
+                "conversation_id": str(session.conversation_id),
             }
 
         elif intent == Intent.LEARNING_PATH:
+            session = conversation_service.append_message(
+                user_id, role="user", content=message,
+                conversation_id=conversation_id, intent="learning_path",
+            )
             from app.services import agent_runtime
             path = agent_runtime.build_learning_path(
                 user_id=user_id,
@@ -236,11 +253,17 @@ def route_message(
                 subject=knowledge_point or "通用",
                 profile=None,
             )
+            conversation_service.append_message(
+                user_id, role="assistant", content=f"已生成学习路径：{path.title}",
+                conversation_id=session.conversation_id, intent="learning_path",
+                metadata={"path_id": str(path.path_id)},
+            )
             return {
                 "intent": intent.value,
                 "confidence": confidence,
                 "method": method,
                 "result": path.model_dump(mode="json"),
+                "conversation_id": str(session.conversation_id),
             }
 
         elif intent == Intent.RESOURCE_GENERATION:
@@ -263,13 +286,23 @@ def route_message(
             }
 
         elif intent == Intent.ASSESSMENT:
+            session = conversation_service.append_message(
+                user_id, role="user", content=message,
+                conversation_id=conversation_id, intent="assessment",
+            )
             from app.services import assess_agent
             result = assess_agent.assess_learning(user_id)
+            summary = result.get("summary", "") if isinstance(result, dict) else ""
+            conversation_service.append_message(
+                user_id, role="assistant", content=summary or "学习评估完成",
+                conversation_id=session.conversation_id, intent="assessment",
+            )
             return {
                 "intent": intent.value,
                 "confidence": confidence,
                 "method": method,
                 "result": result,
+                "conversation_id": str(session.conversation_id),
             }
 
         else:  # GENERAL_CHAT

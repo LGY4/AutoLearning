@@ -179,7 +179,7 @@ export function DashboardPage() {
                   {weakTopics.map((topic) => (
                     <div key={topic} className="dashboard-weak-item">
                       <span>{topic}</span>
-                      <button type="button" className="dashboard-weak-btn" onClick={() => navigate("/practice")}>
+                      <button type="button" className="dashboard-weak-btn" onClick={() => navigate(`/practice?knowledge_point=${encodeURIComponent(topic)}`)}>
                         去练习
                       </button>
                     </div>

@@ -101,6 +101,17 @@ class MarkdownResourceDraft(BaseModel):
     next_steps: List[str] = Field(default_factory=list)
 
 
+class ResourceOutlineSection(BaseModel):
+    heading: str
+    key_points: List[str] = Field(default_factory=list)
+    description: str = ""
+
+class ResourceOutlineDraft(BaseModel):
+    title: str
+    summary: str
+    sections: List[ResourceOutlineSection] = Field(default_factory=list)
+
+
 class MultimodalDraft(BaseModel):
     title: str
     mindmap_markdown: str

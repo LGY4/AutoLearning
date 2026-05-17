@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
-import { apiGet, apiPost, apiDelete } from "../api/client";
+import { useSearchParams } from "react-router-dom";
+import { apiGet, apiPost, apiDelete, getFriendlyError } from "../api/client";
 import { useAppContext } from "../context/AppContext";
 import { Spinner } from "../components/common/Spinner";
 
@@ -20,18 +21,20 @@ interface GradeResult {
   feedback: string;
   key_points_hit?: string[];
   key_points_missed?: string[];
+  _grading_method?: string;
 }
 
 const TYPE_LABELS: Record<string, string> = {
   choice: "选择题",
-  fill_blank: "填空题",
+  blank: "填空题",
   short_answer: "简答题",
-  code: "编程题",
+  programming: "编程题",
   case_analysis: "案例分析",
 };
 
 export function PracticePage() {
   const { state } = useAppContext();
+  const [searchParams] = useSearchParams();
   const [questions, setQuestions] = useState<Question[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentIdx, setCurrentIdx] = useState(0);
@@ -43,10 +46,13 @@ export function PracticePage() {
   const [showSummary, setShowSummary] = useState(false);
   const [filterType, setFilterType] = useState<string>("");
   const [filterDifficulty, setFilterDifficulty] = useState<string>("");
+  const [filterKP, setFilterKP] = useState<string>(() => searchParams.get("knowledge_point") || "");
   const [loadError, setLoadError] = useState<string | null>(null);
   const [tab, setTab] = useState<"practice" | "manage">("practice");
   const [selectedQuestionDetail, setSelectedQuestionDetail] = useState<Question | null>(null);
   const [detailLoading, setDetailLoading] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [generateError, setGenerateError] = useState<string | null>(null);
 
   // Question management state
   const [manageQuestions, setManageQuestions] = useState<Question[]>([]);
@@ -124,12 +130,13 @@ export function PracticePage() {
     const params = new URLSearchParams();
     if (filterType) params.set("question_type", filterType);
     if (filterDifficulty) params.set("difficulty", filterDifficulty);
+    if (filterKP) params.set("knowledge_point", filterKP);
     params.set("page_size", "20");
     apiGet<{ questions: Question[]; total: number }>(`/resources/questions/list?${params}`)
       .then((res) => { setQuestions(res.questions ?? []); setLoadError(null); })
-      .catch((err) => { setQuestions([]); setLoadError(err instanceof Error ? err.message : "加载题目失败"); })
+      .catch((err) => { setQuestions([]); setLoadError(err instanceof Error ? getFriendlyError(err.message) : "加载题目失败"); })
       .finally(() => setLoading(false));
-  }, [tab, filterType, filterDifficulty]);
+  }, [tab, filterType, filterDifficulty, filterKP]);
 
   const currentQuestion = questions[currentIdx];
 
@@ -182,6 +189,36 @@ export function PracticePage() {
     setSelectedOption(null);
     setGradeResult(null);
   }, []);
+
+  const handleAutoGenerate = useCallback(async () => {
+    const kp = filterKP.trim() || state.profile?.knowledge_profile?.weak_topics?.[0] || "";
+    if (!kp) {
+      setGenerateError("请输入知识点或系统需有薄弱知识点记录");
+      return;
+    }
+    setGenerating(true);
+    setGenerateError(null);
+    try {
+      await apiPost("/resources/questions/generate", {
+        knowledge_point: kp,
+        subject: state.profile?.learning_goal?.target_course || "通用",
+        overall_level: state.profile?.knowledge_profile?.overall_level || "beginner",
+      });
+      // Reload questions
+      const params = new URLSearchParams();
+      if (filterType) params.set("question_type", filterType);
+      if (filterDifficulty) params.set("difficulty", filterDifficulty);
+      params.set("knowledge_point", kp);
+      params.set("page_size", "20");
+      const res = await apiGet<{ questions: Question[]; total: number }>(`/resources/questions/list?${params}`);
+      setQuestions(res.questions ?? []);
+      setFilterKP(kp);
+    } catch (e) {
+      setGenerateError(e instanceof Error ? e.message : "生成失败");
+    } finally {
+      setGenerating(false);
+    }
+  }, [filterKP, filterType, filterDifficulty, state.profile]);
 
   if (loading && tab === "practice") return <div className="page-center"><Spinner /></div>;
 
@@ -295,7 +332,19 @@ export function PracticePage() {
       <div className="practice-page">
         <div className="practice-empty">
           <h2>📝 练习模式</h2>
-          <p>{loadError || "题库暂无题目。请先在资源库中添加题目，或通过学习流程自动生成练习题。"}</p>
+          <p>{loadError || "题库暂无题目。可以为薄弱知识点自动生成练习题。"}</p>
+          {generateError && <div className="page-error" style={{ marginTop: 8 }}>{generateError}</div>}
+          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+            <input
+              placeholder="输入知识点（留空用薄弱点）"
+              value={filterKP}
+              onChange={(e) => setFilterKP(e.target.value)}
+              className="practice-filter-kp"
+            />
+            <button type="button" className="practice-btn-submit" onClick={handleAutoGenerate} disabled={generating}>
+              {generating ? "生成中..." : "AI 生成题目"}
+            </button>
+          </div>
           <button type="button" className="practice-btn-next" onClick={() => setTab("manage")} style={{ marginTop: 12 }}>去题库管理</button>
         </div>
       </div>
@@ -350,9 +399,9 @@ export function PracticePage() {
           <select value={filterType} onChange={(e) => setFilterType(e.target.value)}>
             <option value="">全部题型</option>
             <option value="choice">选择题</option>
-            <option value="fill_blank">填空题</option>
+            <option value="blank">填空题</option>
             <option value="short_answer">简答题</option>
-            <option value="code">编程题</option>
+            <option value="programming">编程题</option>
           </select>
           <select value={filterDifficulty} onChange={(e) => setFilterDifficulty(e.target.value)}>
             <option value="">全部难度</option>
@@ -360,6 +409,12 @@ export function PracticePage() {
             <option value="medium">中等</option>
             <option value="hard">困难</option>
           </select>
+          <input
+            placeholder="知识点筛选"
+            value={filterKP}
+            onChange={(e) => setFilterKP(e.target.value)}
+            className="practice-filter-kp"
+          />
           <button type="button" className="practice-btn-next" onClick={() => setTab("manage")}>题库管理</button>
         </div>
       </div>
@@ -425,7 +480,7 @@ export function PracticePage() {
         ) : (
           <div className="practice-feedback">
             <div className={`practice-score ${gradeResult.is_correct ? "correct" : "wrong"}`}>
-              {gradeResult.score}分
+              {gradeResult._grading_method === "fallback" ? `${gradeResult.score}参考分` : `${gradeResult.score}分`}
             </div>
             <div className="practice-feedback-text">{gradeResult.feedback}</div>
             {gradeResult.key_points_hit && gradeResult.key_points_hit.length > 0 && (

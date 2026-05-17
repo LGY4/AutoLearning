@@ -15,6 +15,7 @@ from app.schemas.profile import KnowledgeDimension, ProfileExtractRequest, Stude
 from app.schemas.recommendation import Recommendation
 from app.schemas.resource import LearningResource, ResourceGenerateRequest, ResourceGenerateResponse
 from app.core.enums import AgentName
+from app.core.errors import ErrorCode, ServiceError
 from app.schemas.workflow import AgentWorkflow
 from app.services import (
     conversation_service,
@@ -33,7 +34,7 @@ def _infer_subject_and_knowledge(message: str) -> tuple[str, str]:
     from app.services.intent_parser import parse_intent
     parsed = parse_intent(message)
     subject = parsed.subject or "通用"
-    knowledge_point = parsed.knowledge_point or message[:50]
+    knowledge_point = parsed.knowledge_point
     return subject, knowledge_point
 
 
@@ -98,7 +99,7 @@ def _convert_langgraph_result(
         profile = profile_service.get_or_create_profile(request.user_id, conversation_id=request.conversation_id)
 
     path_data = result.get("learning_path")
-    path = LearningPath.model_validate(path_data) if path_data else _default_path(request, request.knowledge_point or request.message[:50])
+    path = LearningPath.model_validate(path_data) if path_data else _default_path(request, request.knowledge_point or "学习内容")
 
     resources = [LearningResource.model_validate(r) for r in result.get("generated_resources", []) if r.get("status") != "failed"]
 
@@ -365,7 +366,7 @@ def _run_exercise(request: LearningStartRequest, wf_id: UUID, emit) -> LearningS
     )
 
     profile = profile_service.get_or_create_profile(request.user_id)
-    kp = request.knowledge_point or request.message[:50]
+    kp = request.knowledge_point or "综合练习"
 
     emit({"agent_name": "exercise_agent", "stage": "langgraph_node", "status": "running", "progress": 0, "hint": "ExerciseAgent: 正在生成练习题...", "node": "exercise_agent", "duration_ms": 0})
     try:
@@ -678,7 +679,7 @@ def _start_learning_impl(
 
     workflow = workflow_service.get_workflow(generated.workflow_id)
     if workflow is None:
-        raise RuntimeError("Learning workflow was not created")
+        raise ServiceError(ErrorCode.RESOURCE_GENERATION_FAILED, "学习流程创建失败")
 
     emit(
         {

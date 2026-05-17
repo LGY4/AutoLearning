@@ -47,9 +47,6 @@ def extract_profile(request: ProfileExtractRequest, conversation_id: Optional[UU
     previous = get_profile(request.user_id, conversation_id=conversation_id)
     base_agent = get_base_agent(request.user_id, request.base_agent_id)
     profile = agent_runtime.build_profile(request, previous, base_agent=base_agent)
-    if conversation_id:
-        from app.services import conversation_service
-        session = conversation_service.get_conversation(conversation_id)
-        if session and session.profile_id:
-            return repository.save_profile_in_place(session.profile_id, profile)
-    return repository.save_profile(profile)
+    from app.services.profile_event_service import ProfileEventType, emit_event
+    emit_event(request.user_id, ProfileEventType.LLM_EXTRACT, {"profile": profile.model_dump()}, confidence=0.5)
+    return repository.get_profile(request.user_id) or profile

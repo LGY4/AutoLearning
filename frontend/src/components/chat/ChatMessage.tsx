@@ -55,6 +55,7 @@ export interface ChatMsg {
   currentAgent?: string;
   pendingRecommendation?: PendingRecommendation;
   onQuizComplete?: (result: IntentResult) => void;
+  onAction?: (action: string, payload?: string) => void;
 }
 
 interface Props {
@@ -84,7 +85,7 @@ function IntentBadge({ intent, confidence }: { intent: string; confidence: numbe
   );
 }
 
-function IntentResultView({ intentResult, onQuizComplete }: { intentResult: IntentResult; onQuizComplete?: (result: IntentResult) => void }) {
+function IntentResultView({ intentResult, onQuizComplete, onAction }: { intentResult: IntentResult; onQuizComplete?: (result: IntentResult) => void; onAction?: (action: string, payload?: string) => void }) {
   const { intent, confidence, result } = intentResult;
 
   if (intent === "tutoring" && result.quiz_pending) {
@@ -93,6 +94,7 @@ function IntentResultView({ intentResult, onQuizComplete }: { intentResult: Inte
     const origQ = (result.original_question as string) || "";
     const convId = (result.conversation_id as string) || null;
     const isKnown = (result.is_known_kp as boolean) || false;
+    const isPostTest = (result.is_post_test as boolean) || false;
     const session = result.quiz_session as {
       knowledge_point: string;
       original_question: string;
@@ -113,6 +115,7 @@ function IntentResultView({ intentResult, onQuizComplete }: { intentResult: Inte
           originalQuestion={origQ}
           conversationId={convId}
           isKnownKp={isKnown}
+          isPostTest={isPostTest}
           onComplete={(answerResult) => onQuizComplete?.(answerResult)}
         />
       </>
@@ -143,9 +146,25 @@ function IntentResultView({ intentResult, onQuizComplete }: { intentResult: Inte
           <div className="chat-resource-recommend">
             <span className="chat-resource-recommend-label">推荐学习资源：</span>
             {rec.recommended_types.map((t, i) => (
-              <span key={i} className="chat-resource-recommend-tag">{t}</span>
+              <button
+                key={i}
+                type="button"
+                className="chat-resource-recommend-tag"
+                onClick={() => onAction?.("generate_resource", `${rec.knowledge_point || ""}|${t}`)}
+              >
+                {t}
+              </button>
             ))}
           </div>
+        )}
+        {result.knowledge_point && (
+          <button
+            type="button"
+            className="chat-post-test-btn"
+            onClick={() => onAction?.("post_test", result.knowledge_point as string)}
+          >
+            检验学习效果
+          </button>
         )}
       </>
     );
@@ -174,7 +193,17 @@ function IntentResultView({ intentResult, onQuizComplete }: { intentResult: Inte
         <IntentBadge intent={intent} confidence={confidence} />
         <div className="chat-content">
           {mastery != null && <div>掌握度：<strong>{Math.round(mastery * 100)}%</strong></div>}
-          {weak.length > 0 && <div>薄弱点：{weak.join("、")}</div>}
+          {weak.length > 0 && (
+            <div className="chat-assessment-weak">
+              薄弱点：
+              {weak.map((w, i) => (
+                <span key={i}>
+                  {i > 0 && "、"}
+                  <a href={`/practice?knowledge_point=${encodeURIComponent(w)}`} className="chat-assessment-weak-link">{w}</a>
+                </span>
+              ))}
+            </div>
+          )}
           {suggestions.length > 0 && <div>建议：{suggestions.join("；")}</div>}
         </div>
       </>
@@ -311,7 +340,7 @@ function ResourceRecommendCard({ rec, knowledgePoint, onConfirm, onCancel }: {
 }
 
 export const ChatMessage = React.memo(function ChatMessage({ message }: Props) {
-  const { role, content, streaming, images, profile, path, resources, recommendations, intentResult, trace, agentCards, currentAgent, pendingRecommendation, onQuizComplete } = message;
+  const { role, content, streaming, images, profile, path, resources, recommendations, intentResult, trace, agentCards, currentAgent, pendingRecommendation, onQuizComplete, onAction } = message;
 
   return (
     <div className={`chat-message ${role}`}>
@@ -332,7 +361,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message }: Props) {
             onCancel={pendingRecommendation.onCancel}
           />
         ) : intentResult ? (
-          <IntentResultView intentResult={intentResult} onQuizComplete={onQuizComplete} />
+          <IntentResultView intentResult={intentResult} onQuizComplete={onQuizComplete} onAction={onAction} />
         ) : (
           <div className="chat-content">
             {streaming && !content && !agentCards?.length && !currentAgent ? "正在思考..." : null}
