@@ -34,7 +34,7 @@ export function CreateAgentModal({ open, onClose, onSubmit }: Props) {
   };
 
   return (
-    <Modal title="自定义基座智能体" open={open} onCancel={onClose} onOk={handleOk}>
+    <Modal title="自定义基座智能体" open={open} onCancel={onClose} onOk={handleOk} okButtonProps={{ htmlType: "button" }} keyboard={false} destroyOnClose>
       <div className="agent-form">
         <Input value={name} onChange={(e) => setName(e.target.value)} placeholder="智能体名称" />
         <Input.TextArea rows={3} value={description} onChange={(e) => setDescription(e.target.value)} placeholder="智能体描述" />

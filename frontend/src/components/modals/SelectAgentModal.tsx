@@ -11,7 +11,7 @@ interface Props {
 
 export function SelectAgentModal({ open, onClose, agents, selectedId, onSelect }: Props) {
   return (
-    <Modal title="选择智能体" open={open} onCancel={onClose} onOk={onClose}>
+    <Modal title="选择智能体" open={open} onCancel={onClose} onOk={onClose} okButtonProps={{ htmlType: "button" }} keyboard={false} destroyOnClose>
       <Select
         value={selectedId}
         onChange={onSelect}

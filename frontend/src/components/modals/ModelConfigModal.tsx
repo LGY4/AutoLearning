@@ -92,7 +92,7 @@ export function ModelConfigModal({ open, onClose }: Props) {
   }));
 
   return (
-    <Modal title="模型配置" open={open} onCancel={onClose} onOk={handleSave} width={520}>
+    <Modal title="模型配置" open={open} onCancel={onClose} onOk={handleSave} okButtonProps={{ htmlType: "button" }} keyboard={false} destroyOnClose width={520}>
       <div className="model-config-form">
         {runtime && (
           <div className="model-config-current">

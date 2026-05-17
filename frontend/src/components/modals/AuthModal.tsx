@@ -46,11 +46,11 @@ export function AuthModal({ open, onClose, onSubmit, error }: Props) {
   };
 
   return (
-    <Modal title={mode === "login" ? "用户登录" : "用户注册"} open={open} onCancel={onClose} onOk={handleOk}>
+    <Modal title={mode === "login" ? "用户登录" : "用户注册"} open={open} onCancel={onClose} onOk={handleOk} okButtonProps={{ htmlType: "button" }} keyboard={false} destroyOnClose>
       <div className="agent-form">
         {(error || localError) && <div className="auth-error">{error || localError}</div>}
-        <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="用户名" />
-        <Input.Password value={password} onChange={(e) => setPassword(e.target.value)} placeholder="密码" />
+        <Input value={username} onChange={(e) => setUsername(e.target.value)} placeholder="用户名" autoComplete="username" />
+        <Input.Password value={password} onChange={(e) => setPassword(e.target.value)} placeholder="密码" autoComplete={mode === "login" ? "current-password" : "new-password"} />
         {mode === "register" && (
           <>
             <Input value={realName} onChange={(e) => setRealName(e.target.value)} placeholder="姓名" />
