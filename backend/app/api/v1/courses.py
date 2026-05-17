@@ -56,7 +56,7 @@ class GoalUpdate(BaseModel):
     status: Optional[str] = None
 
 
-# ── Course endpoints ─────────────────────────────────────────────────────
+# ── Helpers ──────────────────────────────────────────────────────────────
 
 def _course_to_dict(row: Course) -> dict:
     return {
@@ -69,66 +69,6 @@ def _course_to_dict(row: Course) -> dict:
         "created_at": row.created_at.isoformat() if row.created_at else None,
     }
 
-
-@router.get("", response_model=ApiResponse[dict])
-def list_courses(subject: Optional[str] = None) -> ApiResponse[dict]:
-    with SessionLocal() as db:
-        q = select(Course)
-        if subject:
-            q = q.where(Course.subject == subject)
-        rows = db.scalars(q.order_by(Course.created_at.desc())).all()
-        return success({"total": len(rows), "courses": [_course_to_dict(r) for r in rows]})
-
-
-@router.get("/{course_id}", response_model=ApiResponse[dict])
-def get_course(course_id: UUID) -> ApiResponse[dict]:
-    with SessionLocal() as db:
-        row = db.get(Course, course_id)
-        if not row:
-            raise HTTPException(404, "课程不存在")
-        return success(_course_to_dict(row))
-
-
-@router.post("", response_model=ApiResponse[dict])
-def create_course(payload: CourseCreate, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
-    _require_admin(current_user)
-    with SessionLocal() as db:
-        row = Course(
-            course_name=payload.course_name,
-            subject=payload.subject,
-            description=payload.description,
-            difficulty_level=payload.difficulty_level,
-        )
-        db.add(row)
-        db.flush()
-        return success(_course_to_dict(row))
-
-
-@router.patch("/{course_id}", response_model=ApiResponse[dict])
-def update_course(course_id: UUID, payload: CourseUpdate, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
-    _require_admin(current_user)
-    with SessionLocal() as db:
-        row = db.get(Course, course_id)
-        if not row:
-            raise HTTPException(404, "课程不存在")
-        for field, value in payload.model_dump(exclude_none=True).items():
-            setattr(row, field, value)
-        db.flush()
-        return success(_course_to_dict(row))
-
-
-@router.delete("/{course_id}", response_model=ApiResponse[dict])
-def delete_course(course_id: UUID, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
-    _require_admin(current_user)
-    with SessionLocal() as db:
-        row = db.get(Course, course_id)
-        if not row:
-            raise HTTPException(404, "课程不存在")
-        db.delete(row)
-        return success({"deleted": True})
-
-
-# ── LearningGoal endpoints ───────────────────────────────────────────────
 
 def _goal_to_dict(row: LearningGoal) -> dict:
     return {
@@ -144,8 +84,12 @@ def _goal_to_dict(row: LearningGoal) -> dict:
     }
 
 
+# ── LearningGoal endpoints (must be before /{course_id} to avoid route conflict) ──
+
 @router.get("/goals", response_model=ApiResponse[dict])
 def list_goals(current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
+    if SessionLocal is None:
+        return success({"total": 0, "goals": []})
     with SessionLocal() as db:
         rows = db.scalars(
             select(LearningGoal)
@@ -157,6 +101,8 @@ def list_goals(current_user: UserDTO = Depends(get_current_user)) -> ApiResponse
 
 @router.post("/goals", response_model=ApiResponse[dict])
 def create_goal(payload: GoalCreate, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
+    if SessionLocal is None:
+        raise HTTPException(501, "内存模式不支持此操作")
     with SessionLocal() as db:
         row = LearningGoal(
             user_id=current_user.id,
@@ -173,6 +119,8 @@ def create_goal(payload: GoalCreate, current_user: UserDTO = Depends(get_current
 
 @router.patch("/goals/{goal_id}", response_model=ApiResponse[dict])
 def update_goal(goal_id: UUID, payload: GoalUpdate, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
+    if SessionLocal is None:
+        raise HTTPException(501, "内存模式不支持此操作")
     with SessionLocal() as db:
         row = db.get(LearningGoal, goal_id)
         if not row:
@@ -187,11 +135,83 @@ def update_goal(goal_id: UUID, payload: GoalUpdate, current_user: UserDTO = Depe
 
 @router.delete("/goals/{goal_id}", response_model=ApiResponse[dict])
 def delete_goal(goal_id: UUID, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
+    if SessionLocal is None:
+        raise HTTPException(501, "内存模式不支持此操作")
     with SessionLocal() as db:
         row = db.get(LearningGoal, goal_id)
         if not row:
             raise HTTPException(404, "学习目标不存在")
         if row.user_id != current_user.id:
             raise HTTPException(403, "无权删除此学习目标")
+        db.delete(row)
+        return success({"deleted": True})
+
+
+# ── Course endpoints ─────────────────────────────────────────────────────
+
+@router.get("", response_model=ApiResponse[dict])
+def list_courses(subject: Optional[str] = None) -> ApiResponse[dict]:
+    if SessionLocal is None:
+        return success({"total": 0, "courses": []})
+    with SessionLocal() as db:
+        q = select(Course)
+        if subject:
+            q = q.where(Course.subject == subject)
+        rows = db.scalars(q.order_by(Course.created_at.desc())).all()
+        return success({"total": len(rows), "courses": [_course_to_dict(r) for r in rows]})
+
+
+@router.get("/{course_id}", response_model=ApiResponse[dict])
+def get_course(course_id: UUID) -> ApiResponse[dict]:
+    if SessionLocal is None:
+        raise HTTPException(404, "课程不存在")
+    with SessionLocal() as db:
+        row = db.get(Course, course_id)
+        if not row:
+            raise HTTPException(404, "课程不存在")
+        return success(_course_to_dict(row))
+
+
+@router.post("", response_model=ApiResponse[dict])
+def create_course(payload: CourseCreate, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
+    _require_admin(current_user)
+    if SessionLocal is None:
+        raise HTTPException(501, "内存模式不支持此操作")
+    with SessionLocal() as db:
+        row = Course(
+            course_name=payload.course_name,
+            subject=payload.subject,
+            description=payload.description,
+            difficulty_level=payload.difficulty_level,
+        )
+        db.add(row)
+        db.flush()
+        return success(_course_to_dict(row))
+
+
+@router.patch("/{course_id}", response_model=ApiResponse[dict])
+def update_course(course_id: UUID, payload: CourseUpdate, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
+    _require_admin(current_user)
+    if SessionLocal is None:
+        raise HTTPException(501, "内存模式不支持此操作")
+    with SessionLocal() as db:
+        row = db.get(Course, course_id)
+        if not row:
+            raise HTTPException(404, "课程不存在")
+        for field, value in payload.model_dump(exclude_none=True).items():
+            setattr(row, field, value)
+        db.flush()
+        return success(_course_to_dict(row))
+
+
+@router.delete("/{course_id}", response_model=ApiResponse[dict])
+def delete_course(course_id: UUID, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
+    _require_admin(current_user)
+    if SessionLocal is None:
+        raise HTTPException(501, "内存模式不支持此操作")
+    with SessionLocal() as db:
+        row = db.get(Course, course_id)
+        if not row:
+            raise HTTPException(404, "课程不存在")
         db.delete(row)
         return success({"deleted": True})
