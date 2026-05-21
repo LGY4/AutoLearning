@@ -7,6 +7,11 @@ import { ChatMessage, type ChatMsg, type IntentResult, type TraceEntry } from ".
 import { ChatInput } from "./ChatInput";
 import { PlusMenu } from "../plus-menu/PlusMenu";
 import { PipelineBar } from "../pipeline/PipelineBar";
+import { DebatePanel } from "./DebatePanel";
+import { useToast } from "../common/Toast";
+import { AchievementBadge } from "../common/AchievementBadge";
+import { useGamification } from "../common/Gamification";
+import { addNotification } from "../sidebar/Sidebar";
 import type {
   AgentWorkflow,
   LearningPath,
@@ -16,7 +21,7 @@ import type {
   StudentProfile,
 } from "../../types/baseline";
 
-type ChatMode = "intent" | "pipeline";
+type ChatMode = "intent" | "pipeline" | "debate";
 
 function generateTitle(content: string): string {
   const clean = content.replace(/[#*`\n\r]+/g, " ").trim();
@@ -33,6 +38,12 @@ interface Props {
 export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig }: Props) {
   const { state, dispatch } = useAppContext();
   const { user, baseAgents, selectedBaseAgentId, loading } = state;
+  const toast = useToast();
+  const { recordActivity } = useGamification();
+  const [achievement, setAchievement] = useState<string | null>(null);
+  const [showSummary, setShowSummary] = useState(false);
+  const [summaryData, setSummaryData] = useState<{ resources: number; pathNodes: number; profilePct: number } | null>(null);
+  const msgCountRef = useRef(0);
 
   const [searchParams] = useSearchParams();
   const [messages, setMessages] = useState<ChatMsg[]>([]);
@@ -74,7 +85,7 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
     // End previous conversation to merge its profile back to master
     const prevId = prevConvIdRef.current;
     if (prevId && prevId !== state.selectedConversationId) {
-      apiPost(`/conversations/${prevId}/end`).catch(() => {});
+      apiPost(`/conversations/${prevId}/end`, {}).catch(() => {});
     }
     prevConvIdRef.current = state.selectedConversationId;
   }, [state.selectedConversationId]);
@@ -83,7 +94,7 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
     return () => {
       abortRef.current?.abort();
       if (prevConvIdRef.current) {
-        apiPost(`/conversations/${prevConvIdRef.current}/end`).catch(() => {});
+        apiPost(`/conversations/${prevConvIdRef.current}/end`, {}).catch(() => {});
       }
     };
   }, []);
@@ -99,6 +110,14 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
     const streamMsg: ChatMsg = { id: crypto.randomUUID(), role: "assistant", content: "", streaming: true };
     setMessages((prev) => [...prev, userMsg, streamMsg]);
     dispatch({ type: "SET_LOADING", payload: true });
+
+    // Achievement: first message
+    if (msgCountRef.current === 0) {
+      msgCountRef.current = 1;
+      recordActivity(10);
+      setAchievement("first_blood");
+      addNotification("🎉 首次学习", "你完成了第一次 AI 对话学习");
+    }
 
     // Use SSE streaming for tutor answers
     let usedStreaming = false;
@@ -163,12 +182,17 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
 
     // Fallback: sync POST
     try {
-      const res = await apiPost<IntentResult>("/learning/chat", {
+      const raw = await apiPost<Record<string, unknown>>("/learning/chat", {
         user_id: user.id,
         message: content,
         conversation_id: state.selectedConversationId,
         base_agent_id: selectedBaseAgentId,
-      });
+      }) as Record<string, unknown>;
+      const res = raw as unknown as IntentResult;
+      const emotionData = (raw as Record<string, unknown>).emotion as ChatMsg["emotion"];
+      if (emotionData) {
+        setMessages((prev) => prev.map((m) => m.id === userMsg.id ? { ...m, emotion: emotionData } : m));
+      }
       const finalMsg: ChatMsg = {
         id: streamMsg.id,
         role: "assistant",
@@ -203,6 +227,18 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
         if (r.recommendations) dispatch({ type: "SET_RECOMMENDATIONS", payload: r.recommendations as Recommendation[] });
         if (r.workflow) dispatch({ type: "SET_WORKFLOW", payload: r.workflow as AgentWorkflow });
         if (r.conversation_id) dispatch({ type: "SET_SELECTED_CONVERSATION", payload: String(r.conversation_id) });
+        const count = Array.isArray(r.resources) ? r.resources.length : 0;
+        if (count > 0) {
+          toast.toast("success", "学习资源已生成", `共生成 ${count} 个资源，可在右侧面板查看`);
+          recordActivity(20);
+          setSummaryData({
+            resources: count,
+            pathNodes: (r.path as Record<string,unknown>)?.nodes ? ((r.path as Record<string,unknown>).nodes as unknown[])?.length || 0 : 0,
+            profilePct: (r.profile as Record<string,unknown>)?.completeness_score ? Math.round(((r.profile as Record<string,unknown>).completeness_score as number) * 100) : 0,
+          });
+          setShowSummary(true);
+          addNotification("📚 学习资源生成完毕", `${count} 个资源已就绪，学习路径已更新`);
+        }
       } else if (res.intent === "learning_path" && r.path_id) {
         dispatch({ type: "SET_PATH", payload: r as unknown as LearningPath });
       } else if (res.intent === "exercise" && r.resource_id) {
@@ -390,6 +426,7 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
 
   return (
     <div className="chat-panel">
+      {achievement && <AchievementBadge badgeId={achievement} onClose={() => setAchievement(null)} />}
       {pipelineTrace.length > 0 && (
         <PipelineBar trace={pipelineTrace} streaming={pipelineStreaming} currentAgent={pipelineAgent} />
       )}
@@ -408,10 +445,46 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
         >
           学习流程
         </button>
+        <button
+          className={`chat-mode-btn ${mode === "debate" ? "active" : ""}`}
+          onClick={() => setMode("debate")}
+          type="button"
+        >
+          苏格拉底
+        </button>
       </div>
 
       <div className="chat-messages">
-        {messages.length === 0 && (
+        {showSummary && summaryData && (
+          <div className="summary-card">
+            <div className="summary-card-header">
+              <h4>📋 本次学习小结</h4>
+              <button className="summary-close" onClick={() => setShowSummary(false)} type="button">✕</button>
+            </div>
+            <div className="summary-stats">
+              <div className="summary-stat">
+                <span className="summary-stat-value">{summaryData.resources}</span>
+                <span className="summary-stat-label">生成资源</span>
+              </div>
+              <div className="summary-stat">
+                <span className="summary-stat-value">{summaryData.pathNodes}</span>
+                <span className="summary-stat-label">路径节点</span>
+              </div>
+              <div className="summary-stat">
+                <span className="summary-stat-value">{summaryData.profilePct}%</span>
+                <span className="summary-stat-label">画像完整度</span>
+              </div>
+            </div>
+          </div>
+        )}
+        {mode === "debate" && messages.length === 0 && (
+          <DebatePanel
+            topic={input.trim() || state.profile?.learning_goal?.current_goal || "数据结构与算法"}
+            onClose={() => setMode("intent")}
+            onSendToChat={(text) => { setInput(text); setMode("intent"); }}
+          />
+        )}
+        {mode !== "debate" && messages.length === 0 && (
           <div className="chat-empty">
             {mode === "intent" ? (
               <p>输入问题，AI 将自动识别意图并路由到合适的模块。</p>

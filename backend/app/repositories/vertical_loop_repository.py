@@ -79,11 +79,13 @@ from app.db.models import (
     AgentEventLog,
     AgentTaskModel,
     AgentWorkflowModel,
+    AnswerRecordModel,
     AppUser,
     LearningPathModel,
     LearningPathNodeModel,
     LearningRecordModel,
     LearningResourceModel,
+    QuestionModel,
     RecommendationRecord,
     ResourceVersion,
     StudentProfileHistory,
@@ -713,7 +715,6 @@ class PostgresVerticalLoopRepository:
             ]
 
     def list_questions(self, knowledge_point: Optional[str] = None, question_type: Optional[str] = None, subject: Optional[str] = None, difficulty: Optional[str] = None) -> List[dict]:
-        from app.db.models import QuestionModel
         with SessionLocal() as db:
             q = select(QuestionModel).where(QuestionModel.status == "active")
             if knowledge_point:

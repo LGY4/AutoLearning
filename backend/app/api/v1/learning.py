@@ -410,3 +410,18 @@ def recommend_resources(payload: ResourceRecommendRequest, current_user: UserDTO
         reason=reason,
         dimension_summary=dim_summary,
     ))
+
+
+# ── Socratic Debate ───────────────────────────────────────────────────
+
+class DebateRequest(BaseModel):
+    topic: str
+    rounds: int = 5
+
+
+@router.post("/debate", response_model=ApiResponse[dict])
+def socratic_debate(payload: DebateRequest, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
+    """Generate a Socratic debate between virtual characters on a topic."""
+    from app.services.debate_agent import generate_debate
+    result = generate_debate(payload.topic, payload.rounds)
+    return success(result)

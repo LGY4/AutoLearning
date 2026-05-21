@@ -113,6 +113,33 @@ def _llm_classify(message: str) -> tuple[Intent, float]:
         return Intent.GENERAL_CHAT, 0.3
 
 
+# ── Proactive Follow-up Detection ────────────────────────────────────────────
+# Detects vague / incomplete user inputs and generates context-aware
+# follow-up questions to clarify user intent before routing.
+
+_FOLLOWUP_PATTERNS: list[tuple[str, str]] = [
+    # (trigger pattern regex, follow-up question)
+    (r"我是学|我专业|我读|我在学|我学的是", "请告诉我你的具体方向是什么？（例如：后端开发、前端开发、算法、人工智能、网络安全等）"),
+    (r"想学|要学|准备学|计划学|打算学", "你想学到什么程度？是入门了解、系统掌握还是项目实战？另外有偏好的学习时间吗？"),
+    (r"帮我|帮助我|教我", "当然可以！请具体告诉我你想学什么知识或解决什么问题？"),
+    (r"(不知道|不清楚|不确定).*(学什么|怎么学|从哪)", "没关系！先告诉我你的基础怎么样？之前学过哪些相关知识？或者你正在准备什么考试/面试？"),
+    (r"基础.*弱|基础.*差|零基础|没基础|小白", "不用担心！我们可以从最基础的概念开始。你想具体学习哪个领域呢？（如数据结构、算法、Python编程等）"),
+    (r"(面试|找工作|招聘|实习|校招)", "面试准备需要有针对性的学习。你主要面什么岗位？目标公司类型是？（大厂/外企/创业公司等）"),
+    (r"考研|保研|考研复试|机试", "考研需要系统复习。你的目标院校和专业是什么？主要考哪些科目？"),
+]
+
+
+def _detect_followup_needed(message: str) -> Optional[str]:
+    """Detect if the user input needs a proactive follow-up question.
+    Returns follow-up question text if needed, None otherwise.
+    """
+    import re
+    for pattern, question in _FOLLOWUP_PATTERNS:
+        if re.search(pattern, message):
+            return question
+    return None
+
+
 def detect_intent(message: str) -> tuple[Intent, float, str]:
     """Two-stage intent detection.
 
@@ -145,6 +172,29 @@ def route_message(
     """
     from app.services import conversation_service
     from app.services.model_gateway import ModelOverride, model_override_context
+
+    # Check for emotion in user message
+    from app.services.emotion_agent import detect_emotion
+    emotion = detect_emotion(message)
+
+    # Check for proactive follow-up before intent detection
+    followup = _detect_followup_needed(message)
+    if followup:
+        from app.services import model_gateway as mg
+        greeting = "你好！" if not any(k in message for k in ["你好", "嗨", "hello"]) else ""
+        full_reply = f"{greeting}{followup}\n\n你可以直接告诉我具体需求，我会为你定制学习方案。"
+        return {
+            "intent": "general_chat",
+            "confidence": 1.0,
+            "method": "followup",
+            "result": {
+                "reply": full_reply,
+                "follow_up_question": True,
+                "follow_up_text": followup,
+                "greeting": greeting,
+                **(emotion or {}),
+            },
+        }
 
     intent, confidence, method = detect_intent(message)
 
@@ -179,6 +229,7 @@ def route_message(
                     "method": method,
                     "result": result,
                     "conversation_id": str(session.conversation_id),
+                    "emotion": emotion,
                 }
 
             # Normal answer flow (knowledge point already known)
@@ -203,6 +254,7 @@ def route_message(
                 "method": method,
                 "result": result if isinstance(result, dict) else result.model_dump(mode="json"),
                 "conversation_id": str(session.conversation_id),
+                "emotion": emotion,
             }
 
         elif intent == Intent.EXERCISE:
@@ -226,6 +278,7 @@ def route_message(
                     "content": resource.content,
                     "resource_type": resource.resource_type.value,
                 },
+                "emotion": emotion,
             }
 
         elif intent == Intent.LEARNING_PATH:
@@ -241,6 +294,7 @@ def route_message(
                 "confidence": confidence,
                 "method": method,
                 "result": path.model_dump(mode="json"),
+                "emotion": emotion,
             }
 
         elif intent == Intent.RESOURCE_GENERATION:
@@ -260,6 +314,7 @@ def route_message(
                 "confidence": confidence,
                 "method": method,
                 "result": result.model_dump(mode="json"),
+                "emotion": emotion,
             }
 
         elif intent == Intent.ASSESSMENT:
@@ -270,6 +325,7 @@ def route_message(
                 "confidence": confidence,
                 "method": method,
                 "result": result,
+                "emotion": emotion,
             }
 
         else:  # GENERAL_CHAT
@@ -291,6 +347,7 @@ def route_message(
                 "method": method,
                 "result": {"reply": reply},
                 "conversation_id": str(session.conversation_id),
+                "emotion": emotion,
             }
 
 

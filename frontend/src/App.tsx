@@ -1,16 +1,20 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
-import { Menu, X } from "lucide-react";
+import { Menu, Sun, Moon, X } from "lucide-react";
 import { useAppContext, EMPTY_PROFILE, EMPTY_PATH } from "./context/AppContext";
 import { useAuth } from "./hooks/useAuth";
 import { useLearning } from "./hooks/useLearning";
 import { ErrorBoundary } from "./components/common/ErrorBoundary";
 import { Spinner } from "./components/common/Spinner";
+import { PageSkeleton } from "./components/common/Skeleton";
 import { Sidebar } from "./components/sidebar/Sidebar";
 import { AuthModal } from "./components/modals/AuthModal";
 import { CreateAgentModal } from "./components/modals/CreateAgentModal";
 import { SelectAgentModal } from "./components/modals/SelectAgentModal";
 import { ModelConfigModal } from "./components/modals/ModelConfigModal";
+import { OnboardingTour } from "./components/common/OnboardingTour";
+import { AchievementBadge, useAchievement } from "./components/common/AchievementBadge";
+import { GlobalSearch } from "./components/common/GlobalSearch";
 import { apiPost } from "./api/client";
 import type { BaseAgentCreateRequest, BaseAgentProfile } from "./types/baseline";
 
@@ -27,6 +31,7 @@ const CoursePage = lazy(() => import("./pages/CoursePage").then((m) => ({ defaul
 const ProfileEditPage = lazy(() => import("./pages/ProfileEditPage").then((m) => ({ default: m.ProfileEditPage })));
 const MediaStudioPage = lazy(() => import("./pages/MediaStudioPage").then((m) => ({ default: m.MediaStudioPage })));
 const LearningPathPage = lazy(() => import("./pages/LearningPathPage").then((m) => ({ default: m.LearningPathPage })));
+const TeacherDashboardPage = lazy(() => import("./pages/TeacherDashboardPage").then((m) => ({ default: m.TeacherDashboardPage })));
 
 function App() {
   const { state, dispatch } = useAppContext();
@@ -39,12 +44,48 @@ function App() {
   const [selectAgentOpen, setSelectAgentOpen] = useState(false);
   const [modelConfigOpen, setModelConfigOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const { currentBadge, trigger, close } = useAchievement();
+  const [theme, setTheme] = useState<"dark" | "light">(
+    () => (localStorage.getItem("theme") as "dark" | "light") || "dark"
+  );
+
+  const toggleTheme = () => {
+    const next = theme === "dark" ? "light" : "dark";
+    setTheme(next);
+    localStorage.setItem("theme", next);
+    document.body.className = next === "light" ? "light-theme" : "";
+  };
+
+  // Apply body class on mount
+  useEffect(() => {
+    document.body.className = theme === "light" ? "light-theme" : "";
+  }, [theme]);
 
   useEffect(() => {
     initAuth().then((ok) => {
       if (!ok) setAuthOpen(true);
     });
   }, []);
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === "n") {
+        e.preventDefault();
+        navigate("/chat");
+        dispatch({ type: "SET_SELECTED_CONVERSATION", payload: null });
+        dispatch({ type: "SET_ACTIVE_MESSAGES", payload: [] });
+        dispatch({ type: "SET_PROFILE", payload: EMPTY_PROFILE });
+        dispatch({ type: "SET_PATH", payload: EMPTY_PATH });
+        dispatch({ type: "SET_RESOURCES", payload: [] });
+        dispatch({ type: "SET_RECOMMENDATIONS", payload: [] });
+        dispatch({ type: "SET_WORKFLOW", payload: null });
+        dispatch({ type: "SET_ERROR", payload: null });
+      }
+    };
+    window.addEventListener("keydown", handler);
+    return () => window.removeEventListener("keydown", handler);
+  }, [navigate, dispatch]);
 
   const handleAuthSubmit = async (payload: {
     username: string;
@@ -97,7 +138,7 @@ function App() {
   };
 
   return (
-    <main className="learning-shell dark-layout">
+    <main className={`learning-shell ${theme === "dark" ? "dark-layout" : "light-layout"}`}>
       <button
         className="sidebar-mobile-toggle"
         type="button"
@@ -139,7 +180,7 @@ function App() {
 
       <section className="learning-main">
         <ErrorBoundary>
-          <Suspense fallback={<div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100%" }}><Spinner /></div>}>
+          <Suspense fallback={<PageSkeleton lines={8} />}>
             <Routes>
               <Route path="/" element={<HomePage onAuth={() => setAuthOpen(true)} />} />
               <Route path="/chat" element={<LearningPage {...pageProps} />} />
@@ -154,6 +195,7 @@ function App() {
               <Route path="/profile-edit" element={<ProfileEditPage />} />
               <Route path="/media-studio" element={<MediaStudioPage />} />
               <Route path="/learning-path" element={<LearningPathPage />} />
+              <Route path="/teacher" element={<TeacherDashboardPage />} />
             </Routes>
           </Suspense>
         </ErrorBoundary>
@@ -179,6 +221,11 @@ function App() {
       />
 
       <ModelConfigModal open={modelConfigOpen} onClose={() => setModelConfigOpen(false)} />
+      <OnboardingTour />
+      <GlobalSearch />
+      <button className="theme-toggle" onClick={toggleTheme} type="button" title={theme === "dark" ? "切换浅色" : "切换深色"}>
+        {theme === "dark" ? <Sun size={18} /> : <Moon size={18} />}
+      </button>
     </main>
   );
 }

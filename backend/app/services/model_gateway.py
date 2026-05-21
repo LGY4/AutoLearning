@@ -293,6 +293,11 @@ def _call_openai_compatible_json(prompt: str, override: Optional[ModelOverride] 
 
 def analyze_images(prompt: str, images: List[str], override: Optional[ModelOverride] = None) -> str:
     """Analyze images using vision-capable model (GPT-4o, etc.)."""
+    from app.services.demo_mode import is_demo_mode, demo_generate_text
+
+    if is_demo_mode():
+        return demo_generate_text(prompt)
+
     cfg = _resolve_overrides(override)
     if not cfg["api_key"]:
         raise RuntimeError("LLM_API_KEY is not configured")
@@ -458,6 +463,11 @@ def _dispatch_json(prompt: str, override: Optional[ModelOverride] = None) -> dic
 
 def generate_text(prompt: str, fallback: Optional[str] = None, model_override: Optional[ModelOverride] = None) -> str:
     """Generate text from the configured LLM. Raises on failure unless fallback is provided."""
+    from app.services.demo_mode import is_demo_mode, demo_generate_text
+
+    if is_demo_mode():
+        return demo_generate_text(prompt, fallback)
+
     if _cb_is_open():
         if fallback is not None:
             return fallback
@@ -475,6 +485,12 @@ def generate_text(prompt: str, fallback: Optional[str] = None, model_override: O
 
 def generate_stream(prompt: str, model_override: Optional[ModelOverride] = None):
     """Yield text chunks from a streaming LLM call (OpenAI-compatible SSE)."""
+    from app.services.demo_mode import is_demo_mode, demo_generate_stream
+
+    if is_demo_mode():
+        yield from demo_generate_stream(prompt)
+        return
+
     if _cb_is_open():
         raise RuntimeError("LLM circuit breaker is open — service temporarily unavailable")
     cfg = _resolve_overrides(model_override)
@@ -520,6 +536,12 @@ def generate_stream(prompt: str, model_override: Optional[ModelOverride] = None)
 
 def generate_stream_with_system(system_prompt: str, user_prompt: str, model_override: Optional[ModelOverride] = None):
     """Yield text chunks from a streaming LLM call with separate system/user messages."""
+    from app.services.demo_mode import is_demo_mode, demo_generate_stream_with_system
+
+    if is_demo_mode():
+        yield from demo_generate_stream_with_system(system_prompt, user_prompt)
+        return
+
     if _cb_is_open():
         raise RuntimeError("LLM circuit breaker is open")
     cfg = _resolve_overrides(model_override)
@@ -575,6 +597,11 @@ def generate_json(
     model_override: Optional[ModelOverride] = None,
 ) -> dict:
     """Generate structured JSON from the configured LLM with retry and validation."""
+    from app.services.demo_mode import is_demo_mode, demo_generate_json
+
+    if is_demo_mode():
+        return demo_generate_json(prompt, fallback, required_keys)
+
     if _cb_is_open():
         if fallback is not None:
             return {**fallback, "_model_mode": "circuit_breaker_open", "_retry_count": 0}

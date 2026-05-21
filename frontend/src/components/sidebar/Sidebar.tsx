@@ -1,9 +1,15 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { Button, message } from "antd";
-import { BookOpen, ChevronDown, ChevronRight, Compass, Film, GitBranch, GraduationCap, History, Library, LogOut, Map as MapIcon, MoreHorizontal, Pen, PenTool, Pencil, Plus, Route, Trash2, TrendingUp, User, Wand2 } from "lucide-react";
+import { BookOpen, ChevronDown, ChevronRight, Compass, Film, GitBranch, GraduationCap, History, Library, LogOut, Map as MapIcon, MoreHorizontal, Pen, PenTool, Pencil, Plus, Route, Trash2, TrendingUp, User, Wand2, Bell } from "lucide-react";
 import { useAppContext } from "../../context/AppContext";
 import { apiPatch, apiDelete, clearAccessToken } from "../../api/client";
+import { GamificationBar } from "../common/Gamification";
 import type { ConversationSession } from "../../types/baseline";
+
+// Simple notification store
+const NOTIFS_KEY = "autolearning_notifs";
+interface NotifItem { id: string; title: string; desc: string; time: string; read: boolean; }
+function loadNotifs(): NotifItem[] { try { return JSON.parse(localStorage.getItem(NOTIFS_KEY) || "[]"); } catch { return []; } }
 
 interface Props {
   onAuth: () => void;
@@ -161,13 +167,17 @@ export function Sidebar({ onAuth, onNewSession, onLoadHistory, onLoadConversatio
     <aside className={`profile-sidebar ${mobileOpen ? "mobile-open" : ""}`}>
       <div className="sidebar-head">
         <strong>AutoLearning</strong>
+        <NotificationBell />
       </div>
+
+      <GamificationBar />
 
       <button className="sidebar-action" type="button" onClick={onNewSession}>
         <Plus size={18} />
         <span>新对话</span>
       </button>
 
+      <div className="sidebar-nav-section">
       <button
         className={`sidebar-action secondary ${activePath === "/chat" ? "active" : ""}`}
         type="button"
@@ -364,6 +374,17 @@ export function Sidebar({ onAuth, onNewSession, onLoadHistory, onLoadConversatio
         )}
       </div>
 
+      </div>
+
+      <button
+        className={`sidebar-action secondary ${activePath === "/teacher" ? "active" : ""}`}
+        type="button"
+        onClick={() => onNavigate?.("/teacher")}
+      >
+        <TrendingUp size={18} />
+        <span>教师看板</span>
+      </button>
+
       <button
         className={`sidebar-action secondary ${activePath === "/resources" ? "active" : ""}`}
         type="button"
@@ -393,4 +414,67 @@ export function Sidebar({ onAuth, onNewSession, onLoadHistory, onLoadConversatio
       </div>
     </aside>
   );
+}
+
+function NotificationBell() {
+  const [open, setOpen] = useState(false);
+  const [notifs, setNotifs] = useState<NotifItem[]>(loadNotifs);
+  const unread = notifs.filter((n) => !n.read).length;
+
+  const markAllRead = () => {
+    const updated = notifs.map((n) => ({ ...n, read: true }));
+    setNotifs(updated);
+    localStorage.setItem(NOTIFS_KEY, JSON.stringify(updated));
+  };
+
+  return (
+    <div style={{ position: "relative" }}>
+      <button className="notif-bell" onClick={() => setOpen(!open)} type="button">
+        <Bell size={16} />
+        {unread > 0 && <span className="notif-dot" />}
+      </button>
+      {open && (
+        <div className="notif-dropdown" onClick={(e) => e.stopPropagation()}>
+          {notifs.length === 0 ? (
+            <div className="notif-empty">暂无通知</div>
+          ) : (
+            <>
+              {notifs.slice(0, 20).map((n) => (
+                <div key={n.id} className={`notif-item ${n.read ? "" : "unread"}`}>
+                  <div className="notif-item-icon">{n.read ? "📌" : "🔔"}</div>
+                  <div className="notif-item-content">
+                    <div className="notif-item-title">{n.title}</div>
+                    <div className="notif-item-desc">{n.desc}</div>
+                    <div className="notif-item-time">{n.time}</div>
+                  </div>
+                </div>
+              ))}
+              {unread > 0 && (
+                <button
+                  className="msg-action-btn"
+                  style={{ margin: "8px auto", display: "block" }}
+                  onClick={markAllRead}
+                  type="button"
+                >
+                  全部已读
+                </button>
+              )}
+            </>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+export function addNotification(title: string, desc: string) {
+  const notifs: NotifItem[] = loadNotifs();
+  notifs.unshift({
+    id: crypto.randomUUID(),
+    title,
+    desc,
+    time: new Date().toLocaleTimeString("zh-CN", { hour: "2-digit", minute: "2-digit" }),
+    read: false,
+  });
+  localStorage.setItem(NOTIFS_KEY, JSON.stringify(notifs.slice(0, 100)));
 }

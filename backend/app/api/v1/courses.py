@@ -80,55 +80,7 @@ def list_courses(subject: Optional[str] = None) -> ApiResponse[dict]:
         return success({"total": len(rows), "courses": [_course_to_dict(r) for r in rows]})
 
 
-@router.get("/{course_id}", response_model=ApiResponse[dict])
-def get_course(course_id: UUID) -> ApiResponse[dict]:
-    with SessionLocal() as db:
-        row = db.get(Course, course_id)
-        if not row:
-            raise HTTPException(404, "课程不存在")
-        return success(_course_to_dict(row))
-
-
-@router.post("", response_model=ApiResponse[dict])
-def create_course(payload: CourseCreate, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
-    _require_admin(current_user)
-    with SessionLocal() as db:
-        row = Course(
-            course_name=payload.course_name,
-            subject=payload.subject,
-            description=payload.description,
-            difficulty_level=payload.difficulty_level,
-        )
-        db.add(row)
-        db.flush()
-        return success(_course_to_dict(row))
-
-
-@router.patch("/{course_id}", response_model=ApiResponse[dict])
-def update_course(course_id: UUID, payload: CourseUpdate, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
-    _require_admin(current_user)
-    with SessionLocal() as db:
-        row = db.get(Course, course_id)
-        if not row:
-            raise HTTPException(404, "课程不存在")
-        for field, value in payload.model_dump(exclude_none=True).items():
-            setattr(row, field, value)
-        db.flush()
-        return success(_course_to_dict(row))
-
-
-@router.delete("/{course_id}", response_model=ApiResponse[dict])
-def delete_course(course_id: UUID, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
-    _require_admin(current_user)
-    with SessionLocal() as db:
-        row = db.get(Course, course_id)
-        if not row:
-            raise HTTPException(404, "课程不存在")
-        db.delete(row)
-        return success({"deleted": True})
-
-
-# ── LearningGoal endpoints ───────────────────────────────────────────────
+# ── LearningGoal endpoints (MUST be before /{course_id} to avoid route conflict) ──
 
 def _goal_to_dict(row: LearningGoal) -> dict:
     return {
@@ -193,5 +145,55 @@ def delete_goal(goal_id: UUID, current_user: UserDTO = Depends(get_current_user)
             raise HTTPException(404, "学习目标不存在")
         if row.user_id != current_user.id:
             raise HTTPException(403, "无权删除此学习目标")
+        db.delete(row)
+        return success({"deleted": True})
+
+
+# ── Course CRUD (after /goals routes to avoid route conflict) ──────
+
+@router.get("/{course_id}", response_model=ApiResponse[dict])
+def get_course(course_id: UUID) -> ApiResponse[dict]:
+    with SessionLocal() as db:
+        row = db.get(Course, course_id)
+        if not row:
+            raise HTTPException(404, "课程不存在")
+        return success(_course_to_dict(row))
+
+
+@router.post("", response_model=ApiResponse[dict])
+def create_course(payload: CourseCreate, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
+    _require_admin(current_user)
+    with SessionLocal() as db:
+        row = Course(
+            course_name=payload.course_name,
+            subject=payload.subject,
+            description=payload.description,
+            difficulty_level=payload.difficulty_level,
+        )
+        db.add(row)
+        db.flush()
+        return success(_course_to_dict(row))
+
+
+@router.patch("/{course_id}", response_model=ApiResponse[dict])
+def update_course(course_id: UUID, payload: CourseUpdate, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
+    _require_admin(current_user)
+    with SessionLocal() as db:
+        row = db.get(Course, course_id)
+        if not row:
+            raise HTTPException(404, "课程不存在")
+        for field, value in payload.model_dump(exclude_none=True).items():
+            setattr(row, field, value)
+        db.flush()
+        return success(_course_to_dict(row))
+
+
+@router.delete("/{course_id}", response_model=ApiResponse[dict])
+def delete_course(course_id: UUID, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
+    _require_admin(current_user)
+    with SessionLocal() as db:
+        row = db.get(Course, course_id)
+        if not row:
+            raise HTTPException(404, "课程不存在")
         db.delete(row)
         return success({"deleted": True})

@@ -49,5 +49,10 @@ playwright-report/
 CLAUDE.md
 claude-project-debug.log
 
-# ── Project artifacts ──
-chat-page.png
+# ── Screenshots & temp files ──
+*.png
+*.jpg
+*.jpeg
+test_env.sh
+test_token.txt
+*homepage-snapshot*

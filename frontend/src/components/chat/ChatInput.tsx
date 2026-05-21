@@ -1,6 +1,7 @@
 import { useRef, useState } from "react";
 import { Button, Input, Tag, message } from "antd";
 import { Image, Send, Square, X } from "lucide-react";
+import { VoiceInput } from "./VoiceInput";
 
 interface Props {
   value: string;
@@ -50,18 +51,6 @@ export function ChatInput({ value, onChange, onSend, loading, onStop, agentName,
 
   return (
     <>
-      {images.length > 0 && (
-        <div className="chat-image-preview">
-          {images.map((img, i) => (
-            <div key={i} className="chat-image-thumb">
-              <img src={img} alt={`upload-${i}`} />
-              <button className="chat-image-remove" onClick={() => removeImage(i)}>
-                <X size={12} />
-              </button>
-            </div>
-          ))}
-        </div>
-      )}
       <input
         ref={fileRef}
         type="file"
@@ -79,13 +68,31 @@ export function ChatInput({ value, onChange, onSend, loading, onStop, agentName,
       >
         <Image size={18} />
       </Button>
-      <Input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        onPressEnter={handleSend}
-        placeholder="输入学习目标、知识点或问题...（可上传图片）"
+      <VoiceInput
+        onResult={(text) => onChange(value ? `${value} ${text}` : text)}
         disabled={disabled}
       />
+      <div className="chat-input-main">
+        {images.length > 0 && (
+          <div className="chat-image-preview">
+            {images.map((img, i) => (
+              <div key={i} className="chat-image-thumb">
+                <img src={img} alt={`upload-${i}`} />
+                <button className="chat-image-remove" onClick={() => removeImage(i)}>
+                  <X size={12} />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        <Input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          onPressEnter={handleSend}
+          placeholder="输入学习目标、知识点或问题..."
+          disabled={disabled}
+        />
+      </div>
       {agentName && <Tag color={isSystemAgent ? "blue" : "green"}>{agentName}</Tag>}
       {loading && onStop ? (
         <Button className="voice-button" shape="circle" danger onClick={onStop} title="停止输出">

@@ -96,6 +96,7 @@ CREATE TABLE IF NOT EXISTS knowledge_point (
 CREATE TABLE IF NOT EXISTS learning_resource (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     user_id UUID REFERENCES app_user(id),
+    conversation_id UUID REFERENCES conversation_session(id) ON DELETE SET NULL,
     knowledge_point_id UUID REFERENCES knowledge_point(id),
     title VARCHAR(255) NOT NULL,
     resource_type VARCHAR(64) NOT NULL CHECK (

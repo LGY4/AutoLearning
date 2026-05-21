@@ -1,4 +1,5 @@
 import { ChatPanel } from "../components/chat/ChatPanel";
+import { ResourcePanelGroup } from "../components/resource-panel/ResourcePanelGroup";
 
 interface Props {
   onAuth: () => void;
@@ -11,6 +12,7 @@ export function LearningPage({ onAuth, onCreateAgent, onSelectAgent, onModelConf
   return (
     <div className="workspace-layout">
       <ChatPanel onAuth={onAuth} onCreateAgent={onCreateAgent} onSelectAgent={onSelectAgent} onModelConfig={onModelConfig} />
+      <ResourcePanelGroup />
     </div>
   );
 }

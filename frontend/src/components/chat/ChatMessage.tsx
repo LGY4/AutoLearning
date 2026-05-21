@@ -6,6 +6,7 @@ import { ProfilePanel } from "../profile/ProfilePanel";
 import { RecommendationPanel } from "../recommendation/RecommendationPanel";
 import { AgentTrace } from "../agent/AgentTrace";
 import { InlineQuiz } from "./InlineQuiz";
+import { EmotionCard } from "./EmotionCard";
 import type {
   AgentWorkflow,
   LearningPath,
@@ -55,6 +56,11 @@ export interface ChatMsg {
   currentAgent?: string;
   pendingRecommendation?: PendingRecommendation;
   onQuizComplete?: (result: IntentResult) => void;
+  emotion?: {
+    emotion: string;
+    suggestion: string;
+    intervention: { mode: string; action: string; message: string };
+  } | null;
 }
 
 interface Props {
@@ -311,11 +317,28 @@ function ResourceRecommendCard({ rec, knowledgePoint, onConfirm, onCancel }: {
 }
 
 export const ChatMessage = React.memo(function ChatMessage({ message }: Props) {
-  const { role, content, streaming, images, profile, path, resources, recommendations, intentResult, trace, agentCards, currentAgent, pendingRecommendation, onQuizComplete } = message;
+  const { role, content, streaming, images, profile, path, resources, recommendations, intentResult, trace, agentCards, currentAgent, pendingRecommendation, onQuizComplete, emotion } = message;
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = () => {
+    navigator.clipboard.writeText(content);
+    setCopied(true);
+    setTimeout(() => setCopied(false), 2000);
+  };
 
   return (
     <div className={`chat-message ${role}`}>
       <div className="chat-bubble">
+        {!streaming && content && content.length > 5 && (
+          <div className="msg-actions">
+            <button className="msg-action-btn" onClick={handleCopy} title="复制" type="button">
+              {copied ? "已复制" : "复制"}
+            </button>
+          </div>
+        )}
+        {emotion && role === "user" && (
+          <EmotionCard emotion={emotion} />
+        )}
         {images && images.length > 0 && (
           <div className="chat-message-images">
             {images.map((img, i) => (

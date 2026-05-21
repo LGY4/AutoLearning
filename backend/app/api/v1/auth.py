@@ -16,6 +16,17 @@ router = APIRouter()
 def register(payload: RegisterRequest) -> ApiResponse[LoginResponse]:
     user = auth_service.create_user(payload)
     token = auth_service.issue_access_token(user)
+
+    # Auto-seed demo data for new users
+    try:
+        from app.ops.seed_demo_full import seed_full_demo_data
+        import logging
+        seed_full_demo_data(str(user.id))
+        logging.getLogger(__name__).info("Demo data seeded for user %s", user.id)
+    except Exception:
+        import logging
+        logging.getLogger(__name__).exception("Demo data seeding failed (non-fatal)")
+
     return success(LoginResponse(access_token=token, user=user))
 
 

@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
-import { User, Save, RefreshCw } from "lucide-react";
+import { User, Save, RefreshCw, Download } from "lucide-react";
 import { apiGet, apiPost } from "../api/client";
 import { useAppContext } from "../context/AppContext";
+import { exportLearningReport } from "../utils/exportReport";
 import type { StudentProfile } from "../types/baseline";
 
 interface DimensionInfo {
@@ -92,6 +93,9 @@ export function ProfileEditPage() {
         <div className="page-header-actions">
           <button className="btn-secondary" onClick={loadVersions}>
             版本历史
+          </button>
+          <button className="btn-secondary" onClick={() => exportLearningReport(profile, state.learningPath, state.resources)}>
+            <Download size={16} /> 导出报告
           </button>
           <button className="btn-primary" onClick={handleReExtract} disabled={extracting}>
             <RefreshCw size={16} />

@@ -62,5 +62,8 @@ def bootstrap_application(seed_vertical_loop: bool = False) -> dict:
         wait_for_tcp("Redis", settings.redis_url)
         run_migrations()
     seed_result = seed_demo_data(seed_vertical_loop=seed_vertical_loop)
-    rag_result = import_knowledge_base(force=False)
+    try:
+        rag_result = import_knowledge_base(force=False)
+    except Exception as exc:
+        rag_result = {"error": str(exc), "warning": "RAG knowledge base import failed; app will start without it"}
     return {"seed": seed_result, "rag": rag_result}

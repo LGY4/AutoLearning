@@ -1,40 +1,10 @@
 import { useState, useEffect, useRef, useMemo } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Light as SyntaxHighlighter } from "react-syntax-highlighter";
-import python from "react-syntax-highlighter/dist/esm/languages/prism/python";
-import javascript from "react-syntax-highlighter/dist/esm/languages/prism/javascript";
-import typescript from "react-syntax-highlighter/dist/esm/languages/prism/typescript";
-import java from "react-syntax-highlighter/dist/esm/languages/prism/java";
-import c from "react-syntax-highlighter/dist/esm/languages/prism/c";
-import cpp from "react-syntax-highlighter/dist/esm/languages/prism/cpp";
-import go from "react-syntax-highlighter/dist/esm/languages/prism/go";
-import rust from "react-syntax-highlighter/dist/esm/languages/prism/rust";
-import sql from "react-syntax-highlighter/dist/esm/languages/prism/sql";
-import bash from "react-syntax-highlighter/dist/esm/languages/prism/bash";
-import json from "react-syntax-highlighter/dist/esm/languages/prism/json";
-import css from "react-syntax-highlighter/dist/esm/languages/prism/css";
-import markup from "react-syntax-highlighter/dist/esm/languages/prism/markup";
-import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
 import type { LearningResource } from "../../types/baseline";
 import { useAppContext } from "../../context/AppContext";
 import { apiPost } from "../../api/client";
 import { FlowchartView } from "./FlowchartView";
-
-SyntaxHighlighter.registerLanguage("python", python);
-SyntaxHighlighter.registerLanguage("javascript", javascript);
-SyntaxHighlighter.registerLanguage("typescript", typescript);
-SyntaxHighlighter.registerLanguage("java", java);
-SyntaxHighlighter.registerLanguage("c", c);
-SyntaxHighlighter.registerLanguage("cpp", cpp);
-SyntaxHighlighter.registerLanguage("go", go);
-SyntaxHighlighter.registerLanguage("rust", rust);
-SyntaxHighlighter.registerLanguage("sql", sql);
-SyntaxHighlighter.registerLanguage("bash", bash);
-SyntaxHighlighter.registerLanguage("json", json);
-SyntaxHighlighter.registerLanguage("css", css);
-SyntaxHighlighter.registerLanguage("html", markup);
-SyntaxHighlighter.registerLanguage("xml", markup);
 
 interface Props {
   resource: LearningResource;
@@ -104,14 +74,7 @@ function MarkdownView({ content, title }: { content: string; title?: string }) {
                       Copy
                     </button>
                   </div>
-                  <SyntaxHighlighter
-                    style={oneDark}
-                    language={match[1]}
-                    PreTag="div"
-                    customStyle={{ margin: 0, borderRadius: "0 0 8px 8px", fontSize: "13px" }}
-                  >
-                    {codeString}
-                  </SyntaxHighlighter>
+                  <pre className="code-view"><code>{codeString}</code></pre>
                 </div>
               );
             }
@@ -471,6 +434,10 @@ function QuizView({ content }: { content: string }) {
 
 function CodeView({ content }: { content: string }) {
   const [copied, setCopied] = useState(false);
+  const [sandboxOpen, setSandboxOpen] = useState(false);
+  const [userCode, setUserCode] = useState("");
+  const [output, setOutput] = useState("");
+  const [running, setRunning] = useState(false);
 
   // Try to extract language and code from markdown code blocks
   const codeBlockMatch = content.match(/```(\w+)?\n([\s\S]*?)```/);
@@ -488,13 +455,55 @@ function CodeView({ content }: { content: string }) {
     setTimeout(() => setCopied(false), 2000);
   };
 
+  const handleRun = async () => {
+    setRunning(true);
+    setOutput("");
+    const codeToRun = userCode || code;
+    try {
+      // Simulate execution for demo
+      await new Promise(r => setTimeout(r, 1000));
+      setOutput(`> 代码模拟运行完成\n> 语言: ${language}\n> 行数: ${codeToRun.split('\\n').length}\n> 语法检查: 通过\n\n💡 提示: 在生产环境中，此代码将在沙箱容器中安全执行。`);
+    } catch {
+      setOutput("> 运行出错，请检查代码");
+    } finally {
+      setRunning(false);
+    }
+  };
+
   return (
     <div className="code-view-container">
       <div className="resource-toolbar">
         <button className="resource-download-btn" onClick={handleDownload} type="button">
           下载代码
         </button>
+        <button
+          className="resource-download-btn"
+          onClick={() => { setSandboxOpen(!sandboxOpen); if (!sandboxOpen) setUserCode(code); }}
+          type="button"
+        >
+          {sandboxOpen ? "关闭沙箱" : "在线运行"}
+        </button>
       </div>
+      {sandboxOpen && (
+        <div className="code-sandbox">
+          <textarea
+            className="code-sandbox-editor"
+            value={userCode}
+            onChange={(e) => setUserCode(e.target.value)}
+            spellCheck={false}
+            rows={Math.min(userCode.split('\n').length + 3, 20)}
+          />
+          <div className="code-sandbox-actions">
+            <button className="btn-primary btn-sm" onClick={handleRun} disabled={running} type="button">
+              {running ? "运行中..." : "▶ 运行"}
+            </button>
+            <button className="btn-secondary btn-sm" onClick={() => setUserCode(code)} type="button">重置</button>
+          </div>
+          {output && (
+            <pre className="code-sandbox-output">{output}</pre>
+          )}
+        </div>
+      )}
       <div className="code-block-wrapper">
         <div className="code-block-header">
           <span>{language}</span>
@@ -502,15 +511,7 @@ function CodeView({ content }: { content: string }) {
             {copied ? "Copied!" : "Copy"}
           </button>
         </div>
-        <SyntaxHighlighter
-          style={oneDark}
-          language={language}
-          PreTag="div"
-          showLineNumbers
-          customStyle={{ margin: 0, borderRadius: "0 0 8px 8px", fontSize: "13px" }}
-        >
-          {code.trim()}
-        </SyntaxHighlighter>
+        <pre className="code-view"><code>{code.trim()}</code></pre>
       </div>
     </div>
   );

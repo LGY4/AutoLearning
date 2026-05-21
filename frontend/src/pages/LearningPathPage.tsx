@@ -108,6 +108,20 @@ export function LearningPathPage() {
             <p className="info-card-desc">版本 v{path.strategy ? 1 : 1} · 共 {path.nodes.length} 个节点</p>
           </div>
 
+          {/* Gantt-style progress overview */}
+          <div className="gantt-overview" style={{ marginBottom: 24 }}>
+            <div className="gantt-bar-container">
+              <div className="gantt-bar" style={{
+                width: `${path.nodes.filter(n => n.status === 'completed').length / Math.max(path.nodes.length, 1) * 100}%`
+              }} />
+            </div>
+            <div className="gantt-stats">
+              <span>已完成 {path.nodes.filter(n => n.status === 'completed').length}/{path.nodes.length} 节点</span>
+              <span>预计总时长 {path.nodes.reduce((s, n) => s + (n.estimated_minutes || 0), 0)} 分钟</span>
+              <span>剩余 {path.nodes.filter(n => n.status !== 'completed' && n.status !== 'skipped').reduce((s, n) => s + (n.estimated_minutes || 0), 0)} 分钟</span>
+            </div>
+          </div>
+
           <div className="path-timeline">
             {path.nodes
               .sort((a, b) => a.order - b.order)

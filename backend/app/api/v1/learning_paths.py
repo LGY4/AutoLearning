@@ -23,5 +23,6 @@ def generate_path(payload: LearningPathGenerateRequest) -> ApiResponse[LearningP
 def get_path(current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[LearningPath]:
     path = learning_path_service.get_path(current_user.id)
     if path is None:
-        raise HTTPException(status_code=404, detail="Learning path not found")
+        empty = {"path_id": "00000000-0000-0000-0000-000000000000", "user_id": "00000000-0000-0000-0000-000000000000", "nodes": [], "title": "", "goal": "", "status": "empty"}
+        return success(empty)
     return success(path)
