@@ -81,6 +81,7 @@ class MockStore:
             self._seed_learning_records(uid, archetype_id, get_archetype)
 
         self.paths: Dict[UUID, LearningPath] = {}
+        self.path_history: Dict[UUID, List[LearningPath]] = {}
         self.resources: Dict[UUID, LearningResource] = {}
         self.workflows: Dict[UUID, AgentWorkflow] = {}
         self.recommendations: Dict[UUID, List[Recommendation]] = {}
@@ -89,6 +90,7 @@ class MockStore:
         self.profile_history: Dict[UUID, List[dict]] = {}
         self.resource_versions: Dict[UUID, List[dict]] = {}
         self.profile_events: List[dict] = []
+        self.assessment_snapshots: List[dict] = []
 
     def _load_question_bank(self) -> List[dict]:
         path = Path(__file__).resolve().parents[1] / "data" / "question_bank.json"
@@ -173,6 +175,7 @@ class MockStore:
         base_agent = get_base_agent(user_id, base_agent_id)
         path = agent_runtime.build_learning_path(user_id, goal, subject, profile, base_agent=base_agent)
         self.paths[user_id] = path
+        self.path_history.setdefault(user_id, []).append(path)
         return path
 
     def complete_path_node(self, user_id: UUID, node_id: UUID) -> Optional[LearningPath]:
@@ -181,9 +184,22 @@ class MockStore:
         path = self.paths.get(user_id)
         if path is None:
             return None
+        # Find the target node and validate status
+        target_node = None
+        for node in path.nodes:
+            if node.node_id == node_id:
+                target_node = node
+                break
+        if target_node is None:
+            return None  # node_id not found in path
+        if target_node.status == PathNodeStatus.LOCKED:
+            return None  # cannot complete a locked node
+        if target_node.status == PathNodeStatus.COMPLETED:
+            return path  # already completed, no-op
+
         updated_nodes = []
         found = False
-        for i, node in enumerate(path.nodes):
+        for node in path.nodes:
             if node.node_id == node_id:
                 updated_nodes.append(node.model_copy(update={"status": PathNodeStatus.COMPLETED}))
                 found = True
@@ -192,7 +208,25 @@ class MockStore:
                 found = False
             else:
                 updated_nodes.append(node)
-        if not found:
+        new_path = path.model_copy(update={"nodes": updated_nodes})
+        self.paths[user_id] = new_path
+        return new_path
+
+    def start_learning_node(self, user_id: UUID, knowledge_point: str) -> Optional[LearningPath]:
+        """Set a node to LEARNING status if it is currently AVAILABLE."""
+        from app.core.enums import PathNodeStatus
+        path = self.paths.get(user_id)
+        if path is None:
+            return None
+        updated_nodes = []
+        changed = False
+        for node in path.nodes:
+            if node.knowledge_point == knowledge_point and node.status == PathNodeStatus.AVAILABLE:
+                updated_nodes.append(node.model_copy(update={"status": PathNodeStatus.LEARNING}))
+                changed = True
+            else:
+                updated_nodes.append(node)
+        if not changed:
             return path
         new_path = path.model_copy(update={"nodes": updated_nodes})
         self.paths[user_id] = new_path
@@ -229,12 +263,24 @@ class MockStore:
         return resource
 
     def create_recommendations(self, user_id: UUID) -> List[Recommendation]:
+        from app.services.strategy_engine import get_resource_params
+
         profile = self.profiles.get(user_id)
+
+        # Get completed resource IDs from learning records
+        completed_ids = {
+            r.get("resource_id") for r in self.learning_records
+            if r.get("user_id") == user_id and r.get("resource_id")
+        }
+
         recommendations: List[Recommendation] = []
+        existing_types_by_kp: dict[str, set[str]] = {}
         for resource in self.resources.values():
             if resource.user_id != user_id:
                 continue
-            score, evidence = resource_score(resource, profile)
+            score, evidence = resource_score(resource, profile, completed_ids)
+            kp = resource.knowledge_point
+            existing_types_by_kp.setdefault(kp, set()).add(resource.resource_type.value)
             recommendations.append(
                 Recommendation(
                     recommendation_id=uuid4(),
@@ -243,13 +289,47 @@ class MockStore:
                     title=resource.title,
                     score=score,
                     recommend_reason={
-                        "main_reason": "根据薄弱点、资源偏好和资源质量排序",
-                        "weak_point": resource.knowledge_point,
+                        "main_reason": "根据画像、薄弱点和资源质量综合排序",
+                        "weak_point": kp,
                         "matched_profile": profile.learning_preference.learning_style if profile else "unknown",
                         "evidence": evidence,
+                        "recommendation_type": "existing_resource",
                     },
                 )
             )
+
+        # Bridge strategy_engine: suggest generation for weak topics
+        if profile:
+            weak_topics = profile.knowledge_profile.weak_topics or []
+            style = profile.learning_preference.learning_style
+            for kp in weak_topics[:5]:
+                dim = profile.knowledge_profile.topic_dimensions.get(kp)
+                if not dim:
+                    continue
+                params = get_resource_params(dim, style)
+                recommended_types = params.get("resource_types", [])
+                existing_for_kp = existing_types_by_kp.get(kp, set())
+                missing_types = [t for t in recommended_types if t not in existing_for_kp]
+                for rtype in missing_types[:2]:
+                    virtual_score = 0.5 + (0.15 if kp in weak_topics else 0)
+                    recommendations.append(
+                        Recommendation(
+                            recommendation_id=uuid4(),
+                            user_id=user_id,
+                            resource_id=uuid4(),
+                            title=f"生成{rtype}：{kp}",
+                            score=virtual_score,
+                            recommend_reason={
+                                "main_reason": "根据画像推荐生成该类型资源",
+                                "weak_point": kp,
+                                "matched_profile": style,
+                                "resource_type": rtype,
+                                "dimension_summary": dim.model_dump(),
+                                "recommendation_type": "suggested_generation",
+                            },
+                        )
+                    )
+
         recommendations.sort(key=lambda item: item.score, reverse=True)
         self.recommendations[user_id] = recommendations
         return recommendations

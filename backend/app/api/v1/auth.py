@@ -1,9 +1,8 @@
 from __future__ import annotations
 
-from typing import Optional
+from fastapi import APIRouter, Depends
 
-from fastapi import APIRouter, Header, HTTPException
-
+from app.api.deps import get_current_user
 from app.core.response import ApiResponse, success
 from app.schemas.auth import LoginRequest, LoginResponse, RegisterRequest, UserDTO
 from app.services import auth_service
@@ -27,8 +26,5 @@ def login(payload: LoginRequest) -> ApiResponse[LoginResponse]:
 
 
 @router.get("/me", response_model=ApiResponse[UserDTO])
-def me(authorization: Optional[str] = Header(default=None, alias="Authorization")) -> ApiResponse[UserDTO]:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(status_code=401, detail="Missing access token")
-    token = authorization[len("Bearer "):].strip()
-    return success(auth_service.current_user(token))
+def me(current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[UserDTO]:
+    return success(current_user)

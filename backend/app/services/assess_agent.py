@@ -108,16 +108,25 @@ def _gather_assessment_data(user_id: UUID) -> dict:
         completed = [n for n in path.nodes if n.status.value == "completed"]
         available = [n for n in path.nodes if n.status.value == "available"]
         locked = [n for n in path.nodes if n.status.value == "locked"]
+        learning = [n for n in path.nodes if n.status.value == "learning"]
+        skipped = [n for n in path.nodes if n.status.value == "skipped"]
         data["path_progress"] = {
             "title": path.title,
             "total_nodes": len(path.nodes),
             "completed_count": len(completed),
             "available_count": len(available),
             "locked_count": len(locked),
+            "learning_count": len(learning),
+            "skipped_count": len(skipped),
             "completion_rate": round(len(completed) / max(len(path.nodes), 1), 2),
             "completed_topics": [n.knowledge_point for n in completed],
             "available_topics": [n.knowledge_point for n in available],
+            "learning_topics": [n.knowledge_point for n in learning],
+            "skipped_topics": [n.knowledge_point for n in skipped],
         }
+
+    # Learning records
+    data["learning_records"] = repository.list_learning_records(user_id)
 
     # Graph context
     data["graph_context"] = {
@@ -192,8 +201,11 @@ def assess_learning(user_id: UUID) -> dict:
         }
 
     # Cold-start: return diagnostic-based assessment directly
-    if stage == "cold_start" and data.get("diagnostic"):
-        return _cold_start_assessment(data, base_confidence, sources)
+    if stage == "cold_start":
+        if data.get("diagnostic"):
+            return _cold_start_assessment(data, base_confidence, sources)
+        # Cold-start without diagnostic — use fallback (no LLM call)
+        return _fallback_assessment(data, stage, base_confidence, sources)
 
     # Developing / Mature: use LLM
     from app.services.prompt_utils import build_prompt
@@ -209,39 +221,39 @@ def assess_learning(user_id: UUID) -> dict:
             prompt,
             required_keys=["knowledge_mastery", "weak_points", "mastery_score", "overall_score", "summary"],
         )
+
+        # Adjust confidence based on stage
+        llm_confidence = float(raw.get("overall_score", base_confidence))
+        final_confidence = min(1.0, max(base_confidence * 0.8, llm_confidence))
+
+        result = {
+            "status": "ok",
+            "is_cold_start": stage == "cold_start",
+            "confidence": round(final_confidence, 2),
+            "data_sources": sources,
+            "mastery_score": min(1.0, max(0.0, float(raw.get("mastery_score", 0.5)))),
+            "knowledge_mastery": raw.get("knowledge_mastery", {}),
+            "weak_points": raw.get("weak_points", []),
+            "learning_style": raw.get("learning_style", {}),
+            "progress": raw.get("progress", {}),
+            "review_recommendations": raw.get("review_recommendations", []),
+            "next_suggestions": raw.get("next_suggestions", raw.get("next_steps", [])),
+            "next_steps": raw.get("next_suggestions", raw.get("next_steps", [])),
+            "overall_score": min(1.0, max(0.0, float(raw.get("overall_score", 0.5)))),
+            "summary": raw.get("summary", ""),
+            "stage": stage,
+        }
+
+        # Enrich with graph prerequisite info
+        graph_nodes = {n["name"]: n for n in data.get("graph_context", {}).get("all_topics", [])}
+        for rec in result["review_recommendations"]:
+            topic = rec.get("topic", "")
+            if topic in graph_nodes:
+                rec["prerequisites"] = graph_nodes[topic].get("depends_on", [])
+
+        return result
     except Exception:
         return _fallback_assessment(data, stage, base_confidence, sources)
-
-    # Adjust confidence based on stage
-    llm_confidence = float(raw.get("overall_score", base_confidence))
-    final_confidence = min(1.0, max(base_confidence * 0.8, llm_confidence))
-
-    result = {
-        "status": "ok",
-        "is_cold_start": stage == "cold_start",
-        "confidence": round(final_confidence, 2),
-        "data_sources": sources,
-        "mastery_score": min(1.0, max(0.0, float(raw.get("mastery_score", 0.5)))),
-        "knowledge_mastery": raw.get("knowledge_mastery", {}),
-        "weak_points": raw.get("weak_points", []),
-        "learning_style": raw.get("learning_style", {}),
-        "progress": raw.get("progress", {}),
-        "review_recommendations": raw.get("review_recommendations", []),
-        "next_suggestions": raw.get("next_suggestions", raw.get("next_steps", [])),
-        "next_steps": raw.get("next_suggestions", raw.get("next_steps", [])),
-        "overall_score": min(1.0, max(0.0, float(raw.get("overall_score", 0.5)))),
-        "summary": raw.get("summary", ""),
-        "stage": stage,
-    }
-
-    # Enrich with graph prerequisite info
-    graph_nodes = {n["name"]: n for n in data.get("graph_context", {}).get("all_topics", [])}
-    for rec in result["review_recommendations"]:
-        topic = rec.get("topic", "")
-        if topic in graph_nodes:
-            rec["prerequisites"] = graph_nodes[topic].get("depends_on", [])
-
-    return result
 
 
 def _cold_start_assessment(data: dict, base_confidence: float, sources: List[str]) -> dict:
@@ -309,10 +321,24 @@ def _fallback_assessment(data: dict, stage: str, base_confidence: float, sources
     completion_rate = progress.get("completion_rate", 0.0)
 
     mastery: Dict[str, float] = {}
+    # Use learning records for mastery scores when available
+    learning_records = data.get("learning_records", [])
+    if learning_records:
+        from collections import defaultdict
+        scores_by_topic: Dict[str, List[float]] = defaultdict(list)
+        for rec in learning_records:
+            kp = rec.get("knowledge_point", "")
+            score = rec.get("score", 0)
+            if kp:
+                scores_by_topic[kp].append(score / 100.0 if score > 1 else score)
+        for topic, scores in scores_by_topic.items():
+            mastery[topic] = round(sum(scores) / len(scores), 2)
     for topic in progress.get("completed_topics", []):
-        mastery[topic] = 0.8
+        if topic not in mastery:
+            mastery[topic] = 0.8
     for topic in progress.get("available_topics", []):
-        mastery[topic] = 0.4
+        if topic not in mastery:
+            mastery[topic] = 0.4
     for topic in weak_topics:
         mastery[topic] = max(0.1, mastery.get(topic, 0.3) - 0.2)
     # Merge diagnostic mastery if available

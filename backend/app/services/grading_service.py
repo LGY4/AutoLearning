@@ -4,10 +4,13 @@ from __future__ import annotations
 from typing import Optional, Union
 
 import json
+import logging
 from uuid import UUID
 
 from app.core.errors import ErrorCode, ServiceError
 from app.services.model_gateway import generate_json
+
+logger = logging.getLogger(__name__)
 
 _GRADING_PROMPT = """你是一个专业的学习评估系统。请对比学生的答案和标准答案，给出评分和反馈。
 
@@ -97,7 +100,7 @@ def _grade_exact(standard_answer: Union[str, dict, list], user_answer: Union[str
 
 def grade_and_record(
     user_id: UUID,
-    question_id: UUID,
+    question_id: str,
     question_type: str,
     stem: str,
     standard_answer: Union[str, dict, list],
@@ -151,8 +154,9 @@ def grade_and_record(
                 duration_seconds=time_spent_seconds or 0,
                 wrong_points=[kp for kp in key_points_missed if isinstance(kp, str)],
                 feedback=result.get("feedback"),
-            ), conversation_id=conversation_id)
+            ), conversation_id=conversation_id, skip_event=True)
         except Exception:
-            pass  # 不阻断评分返回
+            logger.exception("Failed to persist learning record for user=%s kp=%s", user_id, knowledge_point)
+            return {**result, "record_id": record["id"], "record_persisted": False}
 
-    return {**result, "record_id": record["id"]}
+    return {**result, "record_id": record["id"], "record_persisted": True}

@@ -1,0 +1,47 @@
+[
+  {
+    "id": "252f7fb5-22dc-47d0-9167-b089e488ef37",
+    "course_name": "数据结构与算法",
+    "subject": "计算机科学",
+    "description": "涵盖栈、队列、树、图等基本数据结构及排序、搜索算法",
+    "difficulty_level": "intermediate",
+    "created_by": null,
+    "created_at": "2026-05-27T17:50:16+00:00"
+  },
+  {
+    "id": "6b5c45ee-afa1-45e2-ad7d-98e05f0b0f02",
+    "course_name": "Python 编程基础",
+    "subject": "编程语言",
+    "description": "Python 语法、数据类型、函数、面向对象编程入门",
+    "difficulty_level": "beginner",
+    "created_by": null,
+    "created_at": "2026-05-27T17:50:16+00:00"
+  },
+  {
+    "id": "f344f6fb-e3ea-4a2f-af34-47232c9910f7",
+    "course_name": "线性代数",
+    "subject": "数学",
+    "description": "向量、矩阵、线性方程组、特征值与特征向量",
+    "difficulty_level": "intermediate",
+    "created_by": null,
+    "created_at": "2026-05-27T17:50:16+00:00"
+  },
+  {
+    "id": "8fb8f7ae-2b28-471f-8690-f5621f4d64e6",
+    "course_name": "机器学习导论",
+    "subject": "人工智能",
+    "description": "监督学习、无监督学习、模型评估与选择",
+    "difficulty_level": "advanced",
+    "created_by": null,
+    "created_at": "2026-05-27T17:50:16+00:00"
+  },
+  {
+    "id": "fbb50de4-0e0e-4fd6-bc66-cb6e0ebf4d60",
+    "course_name": "操作系统原理",
+    "subject": "计算机科学",
+    "description": "进程管理、内存管理、文件系统、并发与同步",
+    "difficulty_level": "intermediate",
+    "created_by": null,
+    "created_at": "2026-05-27T17:50:16+00:00"
+  }
+]

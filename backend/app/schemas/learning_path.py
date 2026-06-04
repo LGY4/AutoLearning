@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import List,  Optional
+from typing import List,  Literal, Optional
 
 from uuid import UUID
 
@@ -16,7 +16,7 @@ class LearningPathNode(BaseModel):
     estimated_minutes: int
     recommended_resource_types: List[ResourceType]
     reason: str
-    status: PathNodeStatus
+    status: PathNodeStatus = PathNodeStatus.LOCKED
 
 
 class LearningPath(BaseModel):
@@ -25,7 +25,7 @@ class LearningPath(BaseModel):
     title: str
     goal: str
     nodes: List[LearningPathNode]
-    status: str = "active"
+    status: Literal["active", "paused", "completed", "archived", "degraded"] = "active"
     strategy: dict = Field(default_factory=dict)
 
 

@@ -1,31 +1,20 @@
 import { Dropdown } from "antd";
 import {
-  BookOpen,
   Bot,
-  Cpu,
-  FileText,
-  GitBranch,
-  LayoutDashboard,
-  MessageSquare,
-  Plus,
+  FileVideo,
+  Image,
   Settings,
-  SquareCode,
   Users,
-  Video,
 } from "lucide-react";
+import { Plus } from "lucide-react";
 
 interface Props {
   onSelect: (key: string) => void;
 }
 
 const MENU_ITEMS = [
-  { key: "add-document", label: "文档资源", icon: <FileText size={14} /> },
-  { key: "add-reading", label: "阅读材料", icon: <BookOpen size={14} /> },
-  { key: "add-quiz", label: "题目资源", icon: <MessageSquare size={14} /> },
-  { key: "add-code", label: "代码实操", icon: <SquareCode size={14} /> },
-  { key: "add-mindmap", label: "思维导图", icon: <LayoutDashboard size={14} /> },
-  { key: "add-video", label: "视频动画", icon: <Video size={14} /> },
-  { key: "add-flowchart", label: "流程图", icon: <GitBranch size={14} /> },
+  { key: "upload-image", label: "上传图片", icon: <Image size={14} /> },
+  { key: "upload-video", label: "上传视频", icon: <FileVideo size={14} /> },
   { type: "divider" as const },
   { key: "custom-agent", label: "自定义智能体", icon: <Bot size={14} /> },
   { key: "select-agent", label: "选择智能体", icon: <Users size={14} /> },

@@ -232,6 +232,13 @@ def _chroma_search(query: str, subject: Optional[str], top_k: int) -> Optional[L
     if collection is None:
         return None
 
+    # Skip vector search when using deterministic fallback embeddings —
+    # they have no semantic meaning and produce random results.
+    # Fall back to keyword-based memory search instead.
+    embedding_status = embedding_service.get_embedding_status()
+    if embedding_status.get("active_mode") == "deterministic_fallback":
+        return None
+
     results = collection.query(query_embeddings=[embedding_service.embed_text(query)], n_results=top_k)
     ids = results.get("ids", [[]])[0]
     docs = results.get("documents", [[]])[0]
@@ -240,19 +247,25 @@ def _chroma_search(query: str, subject: Optional[str], top_k: int) -> Optional[L
 
     output: List[dict] = []
     for chunk_id, content, metadata, distance in zip(ids, docs, metadatas, distances):
-        if subject and metadata.get("subject") != subject:
-            continue
+        score = round(max(0.0, 1.0 - float(distance)), 2)
+        if subject:
+            chunk_subject = metadata.get("subject", "")
+            if chunk_subject == subject:
+                score = min(1.0, score + 0.15)
+            elif subject in chunk_subject or chunk_subject in subject:
+                score = min(1.0, score + 0.08)
         output.append(
             {
                 "chunk_id": chunk_id,
                 "title": metadata.get("title", chunk_id),
                 "content": content,
                 "subject": metadata.get("subject"),
-                "score": round(max(0.0, 1.0 - float(distance)), 2),
+                "score": score,
                 "retrieval_engine": "chroma",
                 "tags": str(metadata.get("tags", "")).split(",") if metadata.get("tags") else [],
             }
         )
+    output.sort(key=lambda x: x["score"], reverse=True)
     return output[:top_k]
 
 
@@ -317,11 +330,99 @@ def knowledge_status() -> dict:
     return status
 
 
-def search_knowledge(query: str, subject: Optional[str] = None, top_k: int = 5) -> List[dict]:
+def _apply_profile_boost(results: List[dict], profile) -> List[dict]:
+    """Boost RAG results that match the student's weak topics."""
+    weak_topics = set(getattr(profile.knowledge_profile, "weak_topics", []) or [])
+    if not weak_topics:
+        return results
+
+    for r in results:
+        title = r.get("title", "")
+        content = r.get("content", "")
+        tags = r.get("tags", [])
+        tag_text = " ".join(tags) if isinstance(tags, list) else ""
+        combined = f"{title} {content} {tag_text}"
+        for topic in weak_topics:
+            if topic and topic in combined:
+                r["score"] = min(0.99, r.get("score", 0) + 0.3)
+                break
+
+    results.sort(key=lambda x: x.get("score", 0), reverse=True)
+    return results
+
+
+def search_knowledge(query: str, subject: Optional[str] = None, top_k: int = 5, profile=None) -> List[dict]:
     if get_settings().rag_backend == "memory":
-        return _memory_search(query, subject, top_k)
-    chroma_results = _chroma_search(query, subject, top_k)
-    if chroma_results is None:
-        # Fallback to memory search when Chroma is unavailable
-        return _memory_search(query, subject, top_k)
-    return chroma_results
+        results = _memory_search(query, subject, top_k)
+    else:
+        chroma_results = _chroma_search(query, subject, top_k)
+        results = chroma_results if chroma_results is not None else _memory_search(query, subject, top_k)
+
+    if profile is not None:
+        results = _apply_profile_boost(results, profile)
+
+    return results
+
+
+def search_knowledge_with_graph(query: str, subject: Optional[str] = None, top_k: int = 5, profile=None) -> List[dict]:
+    """Search knowledge with graph-aware context expansion.
+
+    After initial RAG retrieval, finds which knowledge graph nodes contain
+    the matched chunks and adds sibling chunks from the same node for
+    broader context.
+    """
+    initial = search_knowledge(query, subject, top_k, profile=profile)
+    if not initial:
+        return initial
+
+    try:
+        from app.services import graph_service
+        graph = graph_service.get_full_graph()
+    except Exception:
+        return initial
+
+    if not graph or not graph.get("nodes"):
+        return initial
+
+    # Build chunk_id -> node mapping
+    initial_ids = {r["chunk_id"] for r in initial}
+    chunk_to_node: dict[str, dict] = {}
+    for node in graph["nodes"]:
+        for cid in node.get("chunk_ids", []):
+            chunk_to_node[cid] = node
+
+    # Find sibling chunks from matched nodes
+    expanded: List[dict] = []
+    seen_node_ids: set[str] = set()
+    for result in initial:
+        node = chunk_to_node.get(result["chunk_id"])
+        if not node or node["id"] in seen_node_ids:
+            continue
+        seen_node_ids.add(node["id"])
+        for sibling_cid in node.get("chunk_ids", []):
+            if sibling_cid not in initial_ids:
+                # Look up the chunk content from the knowledge base
+                chunks = load_knowledge_base()
+                for chunk in chunks:
+                    if chunk.chunk_id == sibling_cid:
+                        expanded.append({
+                            "chunk_id": sibling_cid,
+                            "title": chunk.title,
+                            "content": chunk.content,
+                            "subject": chunk.subject,
+                            "score": round(result["score"] * 0.7, 2),
+                            "retrieval_engine": "graph_expand",
+                            "tags": list(chunk.tags),
+                        })
+                        break
+
+    # Merge, deduplicate, cap
+    combined = initial + expanded
+    seen: set[str] = set()
+    deduped: List[dict] = []
+    for item in combined:
+        if item["chunk_id"] not in seen:
+            seen.add(item["chunk_id"])
+            deduped.append(item)
+    deduped.sort(key=lambda x: x["score"], reverse=True)
+    return deduped[:top_k * 2]

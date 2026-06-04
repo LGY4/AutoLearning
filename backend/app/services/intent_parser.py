@@ -37,6 +37,7 @@ _RESOURCE_TYPE_KEYWORDS: Dict[str, List[str]] = {
     "mindmap": ["思维导图", "脑图", "知识图谱", "mindmap", "图谱", "结构图"],
     "code": ["代码", "编程", "实现", "代码示例", "code", "程序", "函数", "算法实现"],
     "video": ["视频", "动画", "演示", "讲解视频", "video"],
+    "flowchart": ["流程图", "流程", "时序图", "状态机", "工作流", "算法流程", "flowchart", "flow", "diagram", "process"],
 }
 
 _DIFFICULTY_SIGNALS: Dict[str, List[str]] = {
@@ -168,7 +169,7 @@ _LLM_PARSE_PROMPT = """\
 {{
   "keywords": ["核心关键词1", "关键词2"],
   "real_need": "用户的真实需求（一句话）",
-  "resource_preferences": ["document", "quiz", "mindmap", "code", "video"],
+  "resource_preferences": ["document", "quiz", "mindmap", "code", "video", "flowchart"],
   "difficulty_signal": "easy/medium/hard或null",
   "subject": "学科名称或null",
   "knowledge_point": "核心知识点或null",

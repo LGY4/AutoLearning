@@ -18,7 +18,8 @@ export type AgentName =
   | "code_agent"
   | "quality_agent"
   | "recommendation_agent"
-  | "tutor_agent";
+  | "tutor_agent"
+  | "flowchart_agent";
 
 export interface BaseAgentProfile {
   agent_id: string;

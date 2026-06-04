@@ -1,4 +1,4 @@
-import { createContext, useContext, useReducer, type ReactNode } from "react";
+import { createContext, useContext, useMemo, useReducer, type ReactNode } from "react";
 import type {
   AgentWorkflow,
   BaseAgentProfile,
@@ -13,6 +13,7 @@ import type {
 export interface AppState {
   user: UserDTO | null;
   profile: StudentProfile;
+  profileLoaded: boolean;
   learningPath: LearningPath;
   resources: LearningResource[];
   recommendations: Recommendation[];
@@ -24,7 +25,9 @@ export interface AppState {
   workflow: AgentWorkflow | null;
   loading: boolean;
   error: string | null;
-  notice: string;
+  notice: string | null;
+  pathVersion: number;
+  pendingMessage: string | null;
 }
 
 type Action =
@@ -42,7 +45,10 @@ type Action =
   | { type: "SET_WORKFLOW"; payload: AgentWorkflow | null }
   | { type: "SET_LOADING"; payload: boolean }
   | { type: "SET_ERROR"; payload: string | null }
-  | { type: "SET_NOTICE"; payload: string }
+  | { type: "SET_NOTICE"; payload: string | null }
+  | { type: "MARK_PROFILE_LOADED" }
+  | { type: "BUMP_PATH_VERSION" }
+  | { type: "SET_PENDING_MESSAGE"; payload: string | null }
   | { type: "LOGOUT" };
 
 const EMPTY_PROFILE: StudentProfile = {
@@ -52,7 +58,7 @@ const EMPTY_PROFILE: StudentProfile = {
   completeness_score: 0,
   confidence_score: 0,
   basic_info: { major: "", grade: "", school: "" },
-  knowledge_profile: { overall_level: "unknown", known_topics: [], weak_topics: [], mastery_level: {} },
+  knowledge_profile: { overall_level: "unknown", known_topics: [], weak_topics: [], mastery_level: {}, topic_dimensions: {} },
   learning_goal: { current_goal: "", target_course: "", target_level: "project_practice", deadline: "" },
   learning_preference: { learning_style: "mixed", resource_preference: {}, difficulty_preference: "step_by_step" },
   learning_behavior: {
@@ -77,12 +83,13 @@ const EMPTY_PATH: LearningPath = {
   title: "",
   goal: "",
   nodes: [],
-  status: "idle",
+  status: "active",
 };
 
 const initialState: AppState = {
   user: null,
   profile: EMPTY_PROFILE,
+  profileLoaded: false,
   learningPath: EMPTY_PATH,
   resources: [],
   recommendations: [],
@@ -95,6 +102,8 @@ const initialState: AppState = {
   loading: false,
   error: null,
   notice: "请登录后开始学习。",
+  pathVersion: 0,
+  pendingMessage: null,
 };
 
 function reducer(state: AppState, action: Action): AppState {
@@ -129,6 +138,12 @@ function reducer(state: AppState, action: Action): AppState {
       return { ...state, error: action.payload };
     case "SET_NOTICE":
       return { ...state, notice: action.payload };
+    case "MARK_PROFILE_LOADED":
+      return { ...state, profileLoaded: true };
+    case "BUMP_PATH_VERSION":
+      return { ...state, pathVersion: state.pathVersion + 1 };
+    case "SET_PENDING_MESSAGE":
+      return { ...state, pendingMessage: action.payload };
     case "LOGOUT":
       return { ...initialState, notice: "请登录后开始学习。" };
     default:
@@ -145,7 +160,8 @@ const AppContext = createContext<AppContextValue | null>(null);
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
-  return <AppContext.Provider value={{ state, dispatch }}>{children}</AppContext.Provider>;
+  const value = useMemo(() => ({ state, dispatch }), [state, dispatch]);
+  return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }
 
 export function useAppContext() {

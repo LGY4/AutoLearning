@@ -10,5 +10,5 @@ class Recommendation(BaseModel):
     user_id: UUID
     resource_id: UUID
     title: str
-    score: float
+    score: float = Field(ge=0.0, le=1.0)
     recommend_reason: dict = Field(default_factory=dict)

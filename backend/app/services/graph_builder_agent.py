@@ -17,6 +17,7 @@ Output: GraphData (draft, pending review).
 
 import json
 import re
+from datetime import datetime, timezone
 from pathlib import Path
 
 from app.schemas.graph import (
@@ -185,10 +186,13 @@ def build_graph(request: GraphBuildRequest) -> GraphData:
         },
     )
 
-    raw = model_gateway.generate_json(
-        prompt,
-        required_keys=["nodes", "edges"],
-    )
+    try:
+        raw = model_gateway.generate_json(
+            prompt,
+            required_keys=["nodes", "edges"],
+        )
+    except Exception as exc:
+        raise RuntimeError(f"知识图谱生成失败（LLM调用异常）: {exc}") from exc
 
     # Parse LLM output into GraphData
     nodes = []
@@ -288,9 +292,7 @@ def publish_graph(graph: GraphData) -> GraphData:
     import json
 
     graph.metadata.review_status = ReviewStatus.APPROVED
-    graph.metadata.updated_at = __import__("datetime").datetime.now(
-        __import__("datetime").timezone.utc
-    ).astimezone().isoformat(timespec="seconds")
+    graph.metadata.updated_at = datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds")
 
     # Save to data directory
     data_dir = Path(__file__).resolve().parents[1] / "data"

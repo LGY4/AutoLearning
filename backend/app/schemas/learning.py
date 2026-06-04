@@ -38,6 +38,8 @@ class LearningStartRequest(BaseModel):
     base_agent_id: Optional[UUID] = None
     images: Optional[List[str]] = None  # base64 data URLs
     model_provider: Optional[str] = None
+    model_api_base: Optional[str] = None
+    model_api_key: Optional[str] = None
     model_name: Optional[str] = None
     model_temperature: Optional[float] = None
 
@@ -57,7 +59,6 @@ class LearningStartResponse(BaseModel):
 
 
 class ResourceRecommendRequest(BaseModel):
-    user_id: UUID
     knowledge_point: str
     subject: str = "通用"
 

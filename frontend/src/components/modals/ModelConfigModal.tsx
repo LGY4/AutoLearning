@@ -21,8 +21,7 @@ interface ModelConfig {
 }
 
 const DEFAULT_PRESETS: Record<string, ProviderPreset> = {
-  deepseek: { label: "默认模型 (DeepSeek V4)", api_base: "https://api.deepseek.com/v1", model: "deepseek-chat" },
-  moai: { label: "moai.top", api_base: "https://moai.top/v1", model: "gpt-5.4-mini" },
+  deepseek: { label: "默认模型 (DeepSeek V4 Pro)", api_base: "https://api.deepseek.com/v1", model: "deepseek-v4-pro" },
   spark: { label: "Spark X2", api_base: "", model: "spark-x" },
   ollama: { label: "Ollama (本地)", api_base: "http://localhost:11434/v1", model: "qwen2.5:7b" },
 };

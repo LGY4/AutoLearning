@@ -219,24 +219,44 @@ def _get_teaching_context(profile: Optional[StudentProfile], knowledge_point: st
     }
 
 
-def _profile_summary(profile: Optional[StudentProfile]) -> dict:
+def _profile_summary(profile: Optional[StudentProfile]) -> str:
     if profile is None:
-        return {}
-    return {
-        "major": profile.basic_info.major,
-        "grade": profile.basic_info.grade,
-        "overall_level": profile.knowledge_profile.overall_level,
-        "weak_topics": profile.knowledge_profile.weak_topics,
-        "known_topics": profile.knowledge_profile.known_topics,
-        "learning_style": profile.learning_preference.learning_style,
-        "goal": profile.learning_goal.current_goal,
-        "target_course": profile.learning_goal.target_course,
-        "last_knowledge_point": profile.learning_behavior.last_knowledge_point,
-        "topic_dimensions": {
-            name: dim.model_dump()
-            for name, dim in profile.knowledge_profile.topic_dimensions.items()
-        },
-    }
+        return "暂无学生画像信息"
+    parts = []
+    major = profile.basic_info.major
+    grade = profile.basic_info.grade
+    if major or grade:
+        parts.append(f"该学生是{major or ''}{grade or ''}")
+    level = profile.knowledge_profile.overall_level
+    if level:
+        parts.append(f"整体水平：{level}")
+    style = profile.learning_preference.learning_style
+    if style:
+        parts.append(f"学习风格：{style}")
+    weak = profile.knowledge_profile.weak_topics
+    if weak:
+        parts.append(f"薄弱知识点：{'、'.join(weak[:5])}")
+    known = profile.knowledge_profile.known_topics
+    if known:
+        parts.append(f"已掌握：{'、'.join(known[:5])}")
+    goal = profile.learning_goal.current_goal
+    if goal:
+        parts.append(f"当前学习目标：{goal}")
+    course = profile.learning_goal.target_course
+    if course:
+        parts.append(f"目标课程：{course}")
+    last_kp = profile.learning_behavior.last_knowledge_point
+    if last_kp:
+        parts.append(f"最近学习：{last_kp}")
+    # Topic dimensions summary
+    dims = profile.knowledge_profile.topic_dimensions
+    if dims:
+        dim_summaries = []
+        for name, dim in list(dims.items())[:3]:
+            m = dim.mastery if hasattr(dim, 'mastery') else '?'
+            dim_summaries.append(f"{name}(掌握度:{m})")
+        parts.append(f"知识点维度：{', '.join(dim_summaries)}")
+    return "。".join(parts) + "。" if parts else "暂无详细画像"
 
 
 # ── Profile extraction ─────────────────────────────────────────────────────
@@ -328,7 +348,7 @@ def build_learning_path(user_id: UUID, goal: str, subject: str, profile: Optiona
         pass
 
     # Enrich prompt with knowledge graph context
-    graph_data = graph_service.get_full_graph()
+    graph_data = graph_service.get_full_graph(subject=subject)
     graph_nodes_summary = [
         {"id": n["id"], "name": n["name"], "level": n["level"], "depends_on": n.get("depends_on", [])}
         for n in graph_data.get("nodes", [])
@@ -383,7 +403,7 @@ def build_learning_path(user_id: UUID, goal: str, subject: str, profile: Optiona
     selected_ids = [name_to_id.get(name) for name in selected_names if name in name_to_id]
 
     if selected_ids:
-        ordered_ids = graph_service.resolve_prerequisite_chain(selected_ids)
+        ordered_ids = graph_service.resolve_prerequisite_chain(selected_ids, subject=subject)
         id_to_name = {v: k for k, v in name_to_id.items()}
         ordered_names = [id_to_name[nid] for nid in ordered_ids if nid in id_to_name]
         # Reorder draft nodes to respect dependency order
@@ -481,6 +501,12 @@ def build_learning_resource(
         )
 
     is_failed = metadata.pop("_failed", False)
+    # Heuristic quality: base 0.7, bonus for content completeness
+    if is_failed:
+        quality = 0.0
+    else:
+        content_len = len(content) if content else 0
+        quality = min(0.95, 0.7 + 0.05 * (content_len // 500))
     return LearningResource(
         resource_id=uuid4(),
         user_id=user_id,
@@ -492,7 +518,7 @@ def build_learning_resource(
         content=content,
         recommendation_reason="结合学生画像、学习目标和知识库检索结果生成。",
         generated_by=generated_by,
-        quality_score=0.0 if is_failed else 0.85,
+        quality_score=quality,
         status=ResourceStatus.FAILED if is_failed else ResourceStatus.PUBLISHED,
         metadata=metadata,
     )
@@ -1056,36 +1082,57 @@ def build_tutor_answer(
     subject: str,
     references: List[dict],
     base_agent: Optional[BaseAgentProfile] = None,
+    conversation_history: Optional[List[dict]] = None,
 ) -> TutorAnswerDraft:
     tc = _get_teaching_context(profile, knowledge_point or "")
-    prompt = _apply_base_agent_prompt(
-        _build_prompt(
-            "tutor_answer_v1",
-            "你是智能辅导Agent。请结合学生画像和RAG知识检索结果回答学生问题。\n"
-            "要求：\n"
-            "1. 先分析问题，再给出详细解答\n"
-            "2. 结合学生薄弱点针对性讲解\n"
-            "3. 给出下一步学习建议\n"
-            "4. 引用参考资料\n"
-            "返回严格 JSON，包含 answer, next_step, references, diagram_prompt, markdown。",
-            {
-                "question": question,
-                "knowledge_point": knowledge_point,
-                "subject": subject,
-                "student_profile": _profile_summary(profile),
-                "references": references,
-                **tc,
-            },
-            strategy_prompt=TEACHING_STRATEGY_SYSTEM,
-        ),
-        base_agent,
+    style = profile.learning_preference.learning_style if profile else "mixed"
+    topic_dim = (profile.knowledge_profile.topic_dimensions.get(knowledge_point) if profile and knowledge_point else None)
+    variables = {"learning_style": style, "topic_dimension": topic_dim.model_dump() if topic_dim else {}}
+    strategy_params = _format_strategy_params(tc, variables)
+
+    # System prompt: strategy + profile + RAG context + format instructions
+    history_text = ""
+    if conversation_history:
+        history_lines = []
+        for msg in conversation_history[-6:]:
+            role = "学生" if msg.get("role") == "user" else "AI导师"
+            content = str(msg.get("content", ""))[:300]
+            history_lines.append(f"{role}: {content}")
+        history_text = "\n".join(history_lines)
+
+    system_parts = [
+        TEACHING_STRATEGY_SYSTEM,
+        strategy_params,
+        f"学生画像：{_profile_summary(profile)}",
+    ]
+    if history_text:
+        system_parts.append(f"近期对话记录：\n{history_text}")
+    if references:
+        system_parts.append(f"参考知识库检索结果：\n{json.dumps(references, ensure_ascii=False)}")
+    system_parts.append(
+        "请结合以上信息回答学生问题。要求：\n"
+        "1. 先分析问题，再给出详细解答\n"
+        "2. 结合学生薄弱点针对性讲解\n"
+        "3. 给出下一步学习建议\n"
+        "4. 引用参考资料\n"
+        "返回严格 JSON，包含 answer, next_step, references, diagram_prompt, markdown。"
     )
+    system_prompt = "\n\n".join(system_parts)
+    system_prompt = _apply_base_agent_prompt(system_prompt, base_agent)
+
+    # User prompt: just the question context
+    user_parts = []
+    if knowledge_point:
+        user_parts.append(f"知识点：{knowledge_point}")
+    user_parts.append(f"学科：{subject}")
+    user_parts.append(f"问题：{question}")
+    user_prompt = "\n".join(user_parts)
 
     try:
-        raw = model_gateway.generate_json(
-            prompt,
+        raw = model_gateway.generate_json_with_system(
+            system_prompt,
+            user_prompt,
             required_keys=["answer", "next_step", "references", "markdown"],
-            schema=TutorAnswerDraft,
         )
         return TutorAnswerDraft.model_validate(raw)
     except Exception as exc:

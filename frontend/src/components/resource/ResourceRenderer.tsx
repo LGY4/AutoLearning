@@ -1,6 +1,8 @@
 import { useState, useEffect, useRef, useMemo } from "react";
+import { ErrorBoundary } from "../common/ErrorBoundary";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import rehypeSanitize from "rehype-sanitize";
 import { Light as SyntaxHighlighter } from "react-syntax-highlighter";
 import python from "react-syntax-highlighter/dist/esm/languages/prism/python";
 import javascript from "react-syntax-highlighter/dist/esm/languages/prism/javascript";
@@ -20,6 +22,7 @@ import type { LearningResource } from "../../types/baseline";
 import { useAppContext } from "../../context/AppContext";
 import { apiPost } from "../../api/client";
 import { FlowchartView } from "./FlowchartView";
+import { WebFallbackView } from "./WebFallbackView";
 
 SyntaxHighlighter.registerLanguage("python", python);
 SyntaxHighlighter.registerLanguage("javascript", javascript);
@@ -123,6 +126,7 @@ function MarkdownView({ content, title }: { content: string; title?: string }) {
       </div>
       <ReactMarkdown
         remarkPlugins={[remarkGfm]}
+        rehypePlugins={[rehypeSanitize]}
         components={{
           code({ className, children, ...props }) {
             const match = /language-(\w+)/.exec(className || "");
@@ -840,12 +844,45 @@ function StructuredDocumentView({ content, title, outline }: { content: string; 
               {sec.heading || title || "内容"}
             </summary>
             <div className="structured-section-body">
-              <ReactMarkdown remarkPlugins={[remarkGfm]}>{sec.body}</ReactMarkdown>
+              <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>{sec.body}</ReactMarkdown>
             </div>
           </details>
         ))}
       </div>
     </div>
+  );
+}
+
+// ── Tracked Renderer (with consumption timing) ────────────────────────────
+
+export function TrackedResourceRenderer({ resource }: Props) {
+  const startTime = useRef<number>(Date.now());
+  const reported = useRef(false);
+
+  useEffect(() => {
+    startTime.current = Date.now();
+    reported.current = false;
+    return () => {
+      if (reported.current) return;
+      reported.current = true;
+      const duration = Math.round((Date.now() - startTime.current) / 1000);
+      if (duration < 3) return;
+      import("../../api/client").then(({ apiPost }) => {
+        apiPost("/learning/resource/track-consumption", {
+          resource_id: resource.resource_id,
+          knowledge_point: resource.knowledge_point,
+          resource_type: resource.resource_type,
+          duration_seconds: duration,
+          completion_pct: 0,
+        }).catch(() => {});
+      });
+    };
+  }, [resource.resource_id]);
+
+  return (
+    <ErrorBoundary fallback={<div style={{ padding: 12, color: "#ef4444", fontSize: 13 }}>资源渲染出错。</div>}>
+      <ResourceRenderer resource={resource} />
+    </ErrorBoundary>
   );
 }
 
@@ -871,6 +908,12 @@ export function ResourceRenderer({ resource }: Props) {
         <p className="resource-error-hint">请尝试重新生成该资源。</p>
       </div>
     );
+  }
+
+  // Web fallback: AI generation failed, show web search results
+  if (resource.status === "web_fallback" || resource.metadata?.source === "web_search") {
+    const results = (resource.metadata?.results as Array<{ title: string; url: string; description: string; platform: string; thumbnail?: string }>) || [];
+    return <WebFallbackView results={results} resourceType={resource.resource_type} />;
   }
 
   if (resource.resource_type === "mindmap") {

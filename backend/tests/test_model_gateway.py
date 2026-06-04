@@ -4,13 +4,16 @@ import os
 
 os.environ["MODEL_PROVIDER"] = "mock"
 
+from typing import Dict, List
+
+import pytest
 from pydantic import BaseModel
 
 from app.services import model_gateway
 
 
 class QuizPayload(BaseModel):
-    questions: list[dict]
+    questions: List[Dict]
 
 
 def test_generate_json_retries_until_valid(monkeypatch) -> None:
@@ -57,15 +60,12 @@ def test_generate_json_raises_after_failures(monkeypatch) -> None:
     )
     monkeypatch.setattr(model_gateway, "_call_spark", lambda prompt: '{"items":[]}')
 
-    try:
+    from app.core.errors import ServiceError
+
+    with pytest.raises(ServiceError, match="结构化 JSON 生成失败"):
         model_gateway.generate_json(
             "生成测试",
-            fallback={"questions": []},
             required_keys=["questions"],
             schema=QuizPayload,
             max_retries=1,
         )
-    except RuntimeError as exc:
-        assert "Spark structured JSON failed" in str(exc)
-    else:
-        raise AssertionError("expected RuntimeError")

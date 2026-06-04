@@ -1,5 +1,8 @@
 from __future__ import annotations
-"""Knowledge graph service — loads graph, resolves prerequisites and learning paths."""
+"""Knowledge graph service — loads graph, resolves prerequisites and learning paths.
+
+Graph source priority: DB-published graph (via graph_repository) > static JSON file.
+"""
 
 from typing import Dict,  List,  Optional
 
@@ -9,6 +12,8 @@ from functools import lru_cache
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+_DEFAULT_SUBJECT = "数据结构"
 
 
 def _graph_file() -> Path:
@@ -24,53 +29,108 @@ def _normalize_edge(e: dict) -> dict:
     }
 
 
-@lru_cache(maxsize=1)
-def load_graph() -> dict:
+def _load_static_graph() -> dict:
+    """Load graph from the static JSON file (fallback)."""
     path = _graph_file()
     if not path.exists():
         logger.error("知识图谱文件缺失: %s — 路径规划将无前置依赖", path)
         return {"nodes": [], "edges": [], "learning_paths": {}}
     raw = json.loads(path.read_text(encoding="utf-8"))
-    # Normalize edges to from/to format
     if "edges" in raw:
         raw["edges"] = [_normalize_edge(e) for e in raw["edges"]]
     return raw
 
 
-def get_node(node_id: str) -> Optional[dict]:
-    for node in load_graph().get("nodes", []):
+def _graphdata_to_dict(graph_data) -> dict:
+    """Convert a GraphData schema object to the dict format used by this service."""
+    d = graph_data.model_dump(mode="json")
+    nodes = d.get("nodes", [])
+    edges = [_normalize_edge(e) for e in d.get("edges", [])]
+    return {
+        "course": d.get("metadata", {}).get("course_name", ""),
+        "nodes": nodes,
+        "edges": edges,
+        "learning_paths": d.get("learning_paths", {}),
+    }
+
+
+# Cache: subject -> graph dict
+_graph_cache: Dict[str, dict] = {}
+
+
+def load_graph(subject: Optional[str] = None) -> dict:
+    """Load knowledge graph for a subject.
+
+    Priority: DB-published graph > static JSON file.
+    Results are cached in memory; call invalidate_cache() to refresh.
+    """
+    subj = subject or _DEFAULT_SUBJECT
+
+    if subj in _graph_cache:
+        return _graph_cache[subj]
+
+    # Try DB-published graph first
+    try:
+        from app.repositories.graph_repository import graph_repository
+        db_graph = graph_repository.get_published_graph(subj)
+        if db_graph:
+            result = _graphdata_to_dict(db_graph)
+            if result.get("nodes"):
+                _graph_cache[subj] = result
+                logger.info("Loaded graph for '%s' from DB (%d nodes)", subj, len(result["nodes"]))
+                return result
+    except Exception:
+        logger.debug("DB graph lookup failed for '%s', falling back to static", subj)
+
+    # Fallback to static JSON (only cache under default subject to avoid wrong-key pollution)
+    static = _load_static_graph()
+    if subj == _DEFAULT_SUBJECT:
+        _graph_cache[subj] = static
+    return static
+
+
+def invalidate_cache(subject: Optional[str] = None) -> None:
+    """Clear cached graph data. Call after graph publish/update."""
+    if subject:
+        _graph_cache.pop(subject, None)
+    else:
+        _graph_cache.clear()
+
+
+def get_node(node_id: str, subject: Optional[str] = None) -> Optional[dict]:
+    for node in load_graph(subject).get("nodes", []):
         if node["id"] == node_id:
             return node
     return None
 
 
-def get_prerequisites(node_id: str) -> List[dict]:
+def get_prerequisites(node_id: str, subject: Optional[str] = None) -> List[dict]:
     """Return prerequisite nodes for a given node."""
-    node = get_node(node_id)
+    node = get_node(node_id, subject)
     if not node:
         return []
     prereq_ids = node.get("depends_on", [])
-    return [n for n in load_graph().get("nodes", []) if n["id"] in prereq_ids]
+    return [n for n in load_graph(subject).get("nodes", []) if n["id"] in prereq_ids]
 
 
-def get_next_nodes(node_id: str) -> List[dict]:
+def get_next_nodes(node_id: str, subject: Optional[str] = None) -> List[dict]:
     """Return nodes that depend on the given node."""
-    graph = load_graph()
+    graph = load_graph(subject)
     next_ids = [e["to"] for e in graph.get("edges", []) if e["from"] == node_id]
     return [n for n in graph.get("nodes", []) if n["id"] in next_ids]
 
 
-def get_learning_path(level: str) -> List[dict]:
+def get_learning_path(level: str, subject: Optional[str] = None) -> List[dict]:
     """Return ordered nodes for a learning path level (beginner/intermediate/advanced)."""
-    graph = load_graph()
+    graph = load_graph(subject)
     path_ids = graph.get("learning_paths", {}).get(level, [])
     nodes_by_id = {n["id"]: n for n in graph.get("nodes", [])}
     return [nodes_by_id[pid] for pid in path_ids if pid in nodes_by_id]
 
 
-def topological_sort() -> List[dict]:
+def topological_sort(subject: Optional[str] = None) -> List[dict]:
     """Return all nodes in dependency order (topological sort)."""
-    graph = load_graph()
+    graph = load_graph(subject)
     nodes = graph.get("nodes", [])
     edges = graph.get("edges", [])
 
@@ -94,21 +154,21 @@ def topological_sort() -> List[dict]:
     return [nodes_by_id[nid] for nid in result_ids if nid in nodes_by_id]
 
 
-def get_node_with_context(node_id: str) -> Optional[dict]:
+def get_node_with_context(node_id: str, subject: Optional[str] = None) -> Optional[dict]:
     """Return a node enriched with prerequisites and next_nodes."""
-    node = get_node(node_id)
+    node = get_node(node_id, subject)
     if not node:
         return None
     return {
         **node,
-        "prerequisites": [n["id"] for n in get_prerequisites(node_id)],
-        "next_nodes": [n["id"] for n in get_next_nodes(node_id)],
+        "prerequisites": [n["id"] for n in get_prerequisites(node_id, subject)],
+        "next_nodes": [n["id"] for n in get_next_nodes(node_id, subject)],
     }
 
 
-def get_full_graph() -> dict:
+def get_full_graph(subject: Optional[str] = None) -> dict:
     """Return the full graph with enriched node data."""
-    graph = load_graph()
+    graph = load_graph(subject)
     enriched = []
     for node in graph.get("nodes", []):
         enriched.append({
@@ -124,10 +184,10 @@ def get_full_graph() -> dict:
     }
 
 
-def resolve_prerequisite_chain(node_ids: List[str]) -> List[str]:
+def resolve_prerequisite_chain(node_ids: List[str], subject: Optional[str] = None) -> List[str]:
     """Given a set of desired node IDs, return them in dependency order,
     including any missing prerequisites inserted before their dependents."""
-    graph = load_graph()
+    graph = load_graph(subject)
     nodes_by_id = {n["id"]: n for n in graph.get("nodes", [])}
     edges = graph.get("edges", [])
 

@@ -164,7 +164,7 @@ def _execute_quality_agent(user_id: UUID, payload: dict) -> Dict[str, Any]:
             "issues": result.get("issues", []),
         }
     except Exception as exc:
-        return {"status": "success", "quality_check": "degraded", "quality_score": 0.4, "feedback": f"质量检查失败: {exc}"}
+        return {"status": "degraded", "quality_check": "failed", "quality_score": 0.4, "feedback": f"质量检查失败: {exc}"}
 
 
 def _execute_recommendation_agent(user_id: UUID, payload: dict) -> Dict[str, Any]:
@@ -273,6 +273,8 @@ def run_fallback_workflow(
     # Compute completed step names directly (graph invocation removed — it was hanging)
     graph_result: Dict[str, Any] = {"completed_steps": [s.agent_name.value for s in workflow_steps]}
 
+    _CRITICAL_STEPS = {AgentName.PROFILE, AgentName.PATH}
+
     for index, step in enumerate(workflow_steps):
         task_id = uuid4()
 
@@ -282,6 +284,42 @@ def run_fallback_workflow(
         duration_ms = int((time.monotonic() - start_time) * 1000)
 
         status = AgentTaskStatus.SUCCESS if agent_result.get("status") == "success" else AgentTaskStatus.FAILED
+
+        # Stop workflow if a critical step fails
+        if status == AgentTaskStatus.FAILED and step.agent_name in _CRITICAL_STEPS:
+            task = AgentTask(
+                task_id=task_id,
+                workflow_id=workflow_id,
+                agent_name=step.agent_name,
+                task_type=step.task_type,
+                status=status,
+                progress=0,
+                input_payload={"user_id": str(user_id), "workflow_context": payload},
+                output_payload={
+                    "message": f"{step.agent_name.value} failed — workflow halted",
+                    "action": step.action,
+                    "result": agent_result,
+                },
+                duration_ms=duration_ms,
+            )
+            tasks.append(task)
+            events.append(
+                AgentEvent(
+                    event_id=uuid4(),
+                    workflow_id=workflow_id,
+                    task_id=task_id,
+                    from_agent=previous_agent,
+                    to_agent=step.agent_name,
+                    action=step.action,
+                    status=status,
+                    progress=step.progress,
+                    input_snapshot={"user_id": str(user_id), "task_type": step.task_type},
+                    output_snapshot={"agent_name": step.agent_name.value, "status": status.value, "result": agent_result},
+                    duration_ms=duration_ms,
+                    created_at=now_iso(),
+                )
+            )
+            break
 
         task = AgentTask(
             task_id=task_id,

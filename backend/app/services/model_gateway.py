@@ -23,17 +23,29 @@ from app.core.errors import ErrorCode, ServiceError
 
 from app.core.config import get_settings
 
+# ── Shared HTTP client pool ───────────────────────────────────────────────
+_clients_by_timeout: Dict[float, httpx.Client] = {}
+_http_client_lock = threading.Lock()
+
+
+def _get_http_client(timeout: float = 120.0) -> httpx.Client:
+    """Get or create a shared httpx.Client with connection pooling, keyed by timeout."""
+    with _http_client_lock:
+        client = _clients_by_timeout.get(timeout)
+        if client is None or client.is_closed:
+            client = httpx.Client(timeout=timeout, limits=httpx.Limits(
+                max_connections=20,
+                max_keepalive_connections=10,
+            ))
+            _clients_by_timeout[timeout] = client
+        return client
+
 
 PROVIDER_PRESETS: Dict[str, Dict[str, str]] = {
     "deepseek": {
-        "label": "默认模型 (DeepSeek V4)",
+        "label": "默认模型 (DeepSeek V4 Pro)",
         "api_base": "https://api.deepseek.com/v1",
-        "model": "deepseek-chat",
-    },
-    "moai": {
-        "label": "moai.top",
-        "api_base": "https://moai.top/v1",
-        "model": "gpt-5.4-mini",
+        "model": "deepseek-v4-pro",
     },
     "spark": {
         "label": "Spark X2",
@@ -86,36 +98,59 @@ def get_model_status() -> Dict[str, Union[str, bool, int]]:
     }
 
 
-# ── Circuit breaker ─────────────────────────────────────────────────────────
+# ── Circuit breaker (per-provider isolation) ────────────────────────────────
 
 _CB_FAILURE_THRESHOLD = 5
 _CB_RECOVERY_SECONDS = 30
+_CB_HALF_OPEN_MAX = 2  # max requests allowed in half-open state
 
-_cb_failures = 0
-_cb_open_until = 0.0
+_cb_state: Dict[str, dict] = {}  # provider -> {"failures": int, "open_until": float, "half_open_count": int}
 _cb_lock = threading.Lock()
 
 
+def _cb_provider_key() -> str:
+    """Get current provider key for circuit breaker isolation."""
+    try:
+        override = _model_override_ctx.get()
+        if override and override.provider:
+            return override.provider
+    except Exception:
+        pass
+    return get_settings().model_provider
+
+
 def _cb_record_success() -> None:
-    global _cb_failures
+    key = _cb_provider_key()
     with _cb_lock:
-        _cb_failures = 0
+        _cb_state.pop(key, None)
 
 
 def _cb_record_failure() -> None:
-    global _cb_failures, _cb_open_until
+    key = _cb_provider_key()
     with _cb_lock:
-        _cb_failures += 1
-        if _cb_failures >= _CB_FAILURE_THRESHOLD:
-            _cb_open_until = time.monotonic() + _CB_RECOVERY_SECONDS
+        state = _cb_state.setdefault(key, {"failures": 0, "open_until": 0.0, "half_open_count": 0})
+        state["failures"] += 1
+        if state["failures"] >= _CB_FAILURE_THRESHOLD:
+            state["open_until"] = time.monotonic() + _CB_RECOVERY_SECONDS
+            state["half_open_count"] = 0
 
 
 def _cb_is_open() -> bool:
+    key = _cb_provider_key()
     with _cb_lock:
-        if _cb_open_until == 0:
+        state = _cb_state.get(key)
+        if not state:
             return False
-        if time.monotonic() >= _cb_open_until:
+        if state["open_until"] == 0:
             return False
+        now = time.monotonic()
+        if now >= state["open_until"]:
+            # Half-open: allow limited requests through to test recovery
+            if state.get("half_open_count", 0) < _CB_HALF_OPEN_MAX:
+                state["half_open_count"] = state.get("half_open_count", 0) + 1
+                return False  # allow this request
+            # Still in half-open but hit limit — block until next window
+            return True
         return True
 
 
@@ -139,17 +174,25 @@ def _retry_request(client: httpx.Client, method: str, url: str, **kwargs) -> htt
                 delay = float(retry_after) if retry_after else _BASE_DELAY * (2 ** attempt)
                 time.sleep(delay)
                 continue
-            response.raise_for_status()
+            raise ServiceError(
+                ErrorCode.LLM_GENERATION_FAILED,
+                f"LLM 服务暂时不可用 (HTTP {response.status_code})，已重试 {_MAX_HTTP_RETRIES} 次"
+            )
+        except httpx.ConnectTimeout:
+            raise ServiceError(ErrorCode.LLM_AUTH_FAILED, f"LLM 连接失败，请检查 API 地址和网络: {url}")
         except httpx.TimeoutException:
             last_exc = ServiceError(ErrorCode.LLM_TIMEOUT, f"LLM 请求超时（{client.timeout}s）")
             if attempt < _MAX_HTTP_RETRIES:
                 time.sleep(_BASE_DELAY * (2 ** attempt))
                 continue
             raise last_exc
-    return response  # type: ignore[return-value]
+    raise last_exc or ServiceError(ErrorCode.LLM_GENERATION_FAILED, "LLM 请求失败")
 
 
 # ── OpenAI-compatible API ──────────────────────────────────────────────────
+
+
+_ALLOWED_PROVIDERS = set(PROVIDER_PRESETS.keys()) | {"openai_compatible"}
 
 
 class ModelOverride(BaseModel):
@@ -158,6 +201,10 @@ class ModelOverride(BaseModel):
     api_key: Optional[str] = None
     model_name: Optional[str] = None
     temperature: Optional[float] = None
+
+    def model_post_init(self, __context: object) -> None:
+        if self.provider and self.provider not in _ALLOWED_PROVIDERS:
+            raise ValueError(f"Invalid provider: {self.provider}. Allowed: {list(_ALLOWED_PROVIDERS)}")
 
 
 # Context variable for per-request model overrides
@@ -213,7 +260,13 @@ def _resolve_overrides(override: Optional[ModelOverride]) -> dict:
         not override and settings.model_provider == "spark"
     )
 
+    provider = (
+        override.provider if override and override.provider
+        else settings.model_provider
+    )
+
     return {
+        "provider": provider,
         "api_base": api_base,
         "api_key": api_key,
         "model": model,
@@ -241,12 +294,45 @@ def _call_openai_compatible(prompt: str, override: Optional[ModelOverride] = Non
         "temperature": cfg["temperature"],
     }
 
-    with httpx.Client(timeout=cfg["timeout"]) as client:
-        response = _retry_request(client, "POST", url, json=payload, headers=headers)
-        if response.status_code == 401:
-            raise ServiceError(ErrorCode.LLM_AUTH_FAILED, "LLM API Key 无效或已过期")
-        response.raise_for_status()
-        data = response.json()
+    client = _get_http_client(timeout=cfg["timeout"])
+    response = _retry_request(client, "POST", url, json=payload, headers=headers)
+    if response.status_code == 401:
+        raise ServiceError(ErrorCode.LLM_AUTH_FAILED, "LLM API Key 无效或已过期")
+    response.raise_for_status()
+    data = response.json()
+
+    choices = data.get("choices", [])
+    if not choices:
+        raise ServiceError(ErrorCode.LLM_GENERATION_FAILED, "AI 服务返回空结果")
+    return choices[0].get("message", {}).get("content", "").strip()
+
+
+def _call_openai_compatible_with_system(system_prompt: str, user_prompt: str, override: Optional[ModelOverride] = None) -> str:
+    cfg = _resolve_overrides(override)
+    if not cfg["api_key"]:
+        raise ServiceError(ErrorCode.LLM_AUTH_FAILED, "LLM API Key 未配置")
+
+    url = f"{cfg['api_base']}/chat/completions"
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {cfg['api_key']}",
+    }
+    payload = {
+        "model": cfg["model"],
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "max_tokens": cfg["max_tokens"],
+        "temperature": cfg["temperature"],
+    }
+
+    client = _get_http_client(timeout=cfg["timeout"])
+    response = _retry_request(client, "POST", url, json=payload, headers=headers)
+    if response.status_code == 401:
+        raise ServiceError(ErrorCode.LLM_AUTH_FAILED, "LLM API Key 无效或已过期")
+    response.raise_for_status()
+    data = response.json()
 
     choices = data.get("choices", [])
     if not choices:
@@ -276,15 +362,18 @@ def _call_openai_compatible_json(prompt: str, override: Optional[ModelOverride] 
         ],
         "max_tokens": cfg["max_tokens"],
         "temperature": cfg["temperature"],
-        "response_format": {"type": "json_object"},
     }
 
-    with httpx.Client(timeout=cfg["timeout"]) as client:
-        response = _retry_request(client, "POST", url, json=payload, headers=headers)
-        if response.status_code == 401:
-            raise ServiceError(ErrorCode.LLM_AUTH_FAILED, "LLM API Key 无效或已过期")
-        response.raise_for_status()
-        data = response.json()
+    # Only OpenAI-compatible providers support response_format
+    if cfg.get("provider") in ("openai", "openai_compatible", "deepseek"):
+        payload["response_format"] = {"type": "json_object"}
+
+    client = _get_http_client(timeout=cfg["timeout"])
+    response = _retry_request(client, "POST", url, json=payload, headers=headers)
+    if response.status_code == 401:
+        raise ServiceError(ErrorCode.LLM_AUTH_FAILED, "LLM API Key 无效或已过期")
+    response.raise_for_status()
+    data = response.json()
 
     choices = data.get("choices", [])
     if not choices:
@@ -304,7 +393,7 @@ def analyze_images(prompt: str, images: List[str], override: Optional[ModelOverr
     if "mini" in vision_model:
         vision_model = vision_model.replace("-mini", "")
     if "gpt-" not in vision_model and "claude" not in vision_model:
-        vision_model = "gpt-5.4"
+        vision_model = cfg["model"]
 
     url = f"{cfg['api_base']}/chat/completions"
     headers = {
@@ -333,12 +422,12 @@ def analyze_images(prompt: str, images: List[str], override: Optional[ModelOverr
         "temperature": cfg["temperature"],
     }
 
-    with httpx.Client(timeout=cfg["timeout"] * 2) as client:
-        response = _retry_request(client, "POST", url, json=payload, headers=headers)
-        if response.status_code == 401:
-            raise ServiceError(ErrorCode.LLM_AUTH_FAILED, "Vision API Key 无效或已过期")
-        response.raise_for_status()
-        data = response.json()
+    client = _get_http_client(timeout=cfg["timeout"] * 2)
+    response = _retry_request(client, "POST", url, json=payload, headers=headers)
+    if response.status_code == 401:
+        raise ServiceError(ErrorCode.LLM_AUTH_FAILED, "Vision API Key 无效或已过期")
+    response.raise_for_status()
+    data = response.json()
 
     choices = data.get("choices", [])
     if not choices:
@@ -381,7 +470,7 @@ def _call_spark(prompt: str) -> str:
     ws = websocket.create_connection(
         _spark_authorized_url(),
         timeout=settings.llm_timeout_seconds,
-        sslopt={"cert_reqs": ssl.CERT_NONE, "check_hostname": False},
+        sslopt={"cert_reqs": ssl.CERT_REQUIRED, "check_hostname": True},
     )
     try:
         ws.send(json.dumps(payload, ensure_ascii=False))
@@ -597,6 +686,55 @@ def generate_text(prompt: str, fallback: Optional[str] = None, model_override: O
         raise
 
 
+def generate_with_system_prompt(system_prompt: str, user_prompt: str, fallback: Optional[str] = None, model_override: Optional[ModelOverride] = None) -> str:
+    """Generate text with separate system and user messages for better LLM instruction following."""
+    if _cb_is_open():
+        if fallback is not None:
+            return fallback
+        raise ServiceError(ErrorCode.LLM_CIRCUIT_OPEN)
+    cfg = _resolve_overrides(model_override)
+    try:
+        if cfg["use_spark"] and not (model_override and model_override.api_base):
+            result = _call_spark(f"[SYSTEM]\n{system_prompt}\n[USER]\n{user_prompt}")
+        else:
+            result = _call_openai_compatible_with_system(system_prompt, user_prompt, model_override)
+        _cb_record_success()
+        return result
+    except Exception:
+        _cb_record_failure()
+        if fallback is not None:
+            return fallback
+        raise
+
+
+def generate_json_with_system(
+    system_prompt: str,
+    user_prompt: str,
+    fallback: Optional[dict] = None,
+    required_keys: Optional[Iterable[str]] = None,
+    model_override: Optional[ModelOverride] = None,
+) -> dict:
+    """Generate JSON with separate system/user messages. Falls back to text extraction on parse failure."""
+    text = generate_with_system_prompt(system_prompt, user_prompt, model_override=model_override)
+    try:
+        parsed = json.loads(text)
+        if required_keys and not all(k in parsed for k in required_keys):
+            raise ValueError("missing required keys")
+        return parsed
+    except (json.JSONDecodeError, ValueError):
+        # Try to extract JSON from markdown code blocks
+        import re
+        match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+        if match:
+            parsed = json.loads(match.group(1))
+            if required_keys and not all(k in parsed for k in required_keys):
+                raise
+            return parsed
+        if fallback is not None:
+            return fallback
+        raise
+
+
 def generate_stream(prompt: str, model_override: Optional[ModelOverride] = None):
     """Yield text chunks from a streaming LLM call (OpenAI-compatible SSE)."""
     if _cb_is_open():
@@ -618,28 +756,50 @@ def generate_stream(prompt: str, model_override: Optional[ModelOverride] = None)
         "stream": True,
     }
 
-    try:
-        with httpx.Client(timeout=cfg["timeout"]) as client:
-            with client.stream("POST", url, json=payload, headers=headers) as response:
-                response.raise_for_status()
-                for line in response.iter_lines():
-                    if not line or not line.startswith("data: "):
+    last_exc: Optional[Exception] = None
+    for attempt in range(_MAX_HTTP_RETRIES + 1):
+        yielded_any = False
+        try:
+            with httpx.Client(timeout=cfg["timeout"]) as client:
+                with client.stream("POST", url, json=payload, headers=headers) as response:
+                    if response.status_code in _TRANSIENT_STATUS_CODES and attempt < _MAX_HTTP_RETRIES:
+                        retry_after = response.headers.get("retry-after")
+                        time.sleep(float(retry_after) if retry_after else _BASE_DELAY * (2 ** attempt))
                         continue
-                    data_str = line[6:]
-                    if data_str.strip() == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data_str)
-                        delta = chunk.get("choices", [{}])[0].get("delta", {})
-                        content = delta.get("content")
-                        if content:
-                            yield content
-                    except (json.JSONDecodeError, IndexError, KeyError):
-                        continue
-        _cb_record_success()
-    except Exception:
-        _cb_record_failure()
-        raise
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content")
+                            if content:
+                                yielded_any = True
+                                yield content
+                        except (json.JSONDecodeError, IndexError, KeyError):
+                            continue
+            _cb_record_success()
+            return
+        except httpx.ConnectTimeout:
+            _cb_record_failure()
+            raise ServiceError(ErrorCode.LLM_AUTH_FAILED, f"LLM 连接失败，请检查 API 地址和网络: {url}")
+        except (httpx.TimeoutException, httpx.ReadError, httpx.RemoteProtocolError) as exc:
+            last_exc = exc
+            _cb_record_failure()
+            if yielded_any:
+                raise
+            if attempt < _MAX_HTTP_RETRIES:
+                time.sleep(_BASE_DELAY * (2 ** attempt))
+                continue
+            raise ServiceError(ErrorCode.LLM_TIMEOUT, f"LLM 流式请求超时（{cfg['timeout']}s）")
+        except Exception:
+            _cb_record_failure()
+            raise
+    raise last_exc or ServiceError(ErrorCode.LLM_GENERATION_FAILED, "LLM 流式请求失败")
 
 
 def generate_stream_with_system(system_prompt: str, user_prompt: str, model_override: Optional[ModelOverride] = None):
@@ -666,28 +826,50 @@ def generate_stream_with_system(system_prompt: str, user_prompt: str, model_over
         "stream": True,
     }
 
-    try:
-        with httpx.Client(timeout=cfg["timeout"]) as client:
-            with client.stream("POST", url, json=payload, headers=headers) as response:
-                response.raise_for_status()
-                for line in response.iter_lines():
-                    if not line or not line.startswith("data: "):
+    last_exc: Optional[Exception] = None
+    for attempt in range(_MAX_HTTP_RETRIES + 1):
+        yielded_any = False
+        try:
+            with httpx.Client(timeout=cfg["timeout"]) as client:
+                with client.stream("POST", url, json=payload, headers=headers) as response:
+                    if response.status_code in _TRANSIENT_STATUS_CODES and attempt < _MAX_HTTP_RETRIES:
+                        retry_after = response.headers.get("retry-after")
+                        time.sleep(float(retry_after) if retry_after else _BASE_DELAY * (2 ** attempt))
                         continue
-                    data_str = line[6:]
-                    if data_str.strip() == "[DONE]":
-                        break
-                    try:
-                        chunk = json.loads(data_str)
-                        delta = chunk.get("choices", [{}])[0].get("delta", {})
-                        content = delta.get("content")
-                        if content:
-                            yield content
-                    except (json.JSONDecodeError, IndexError, KeyError):
-                        continue
-        _cb_record_success()
-    except Exception:
-        _cb_record_failure()
-        raise
+                    response.raise_for_status()
+                    for line in response.iter_lines():
+                        if not line or not line.startswith("data: "):
+                            continue
+                        data_str = line[6:]
+                        if data_str.strip() == "[DONE]":
+                            break
+                        try:
+                            chunk = json.loads(data_str)
+                            delta = chunk.get("choices", [{}])[0].get("delta", {})
+                            content = delta.get("content")
+                            if content:
+                                yielded_any = True
+                                yield content
+                        except (json.JSONDecodeError, IndexError, KeyError):
+                            continue
+            _cb_record_success()
+            return  # success — exit retry loop
+        except httpx.ConnectTimeout:
+            _cb_record_failure()
+            raise ServiceError(ErrorCode.LLM_AUTH_FAILED, f"LLM 连接失败，请检查 API 地址和网络: {url}")
+        except (httpx.TimeoutException, httpx.ReadError, httpx.RemoteProtocolError) as exc:
+            last_exc = exc
+            _cb_record_failure()
+            if yielded_any:
+                raise  # already yielded partial data, can't retry
+            if attempt < _MAX_HTTP_RETRIES:
+                time.sleep(_BASE_DELAY * (2 ** attempt))
+                continue
+            raise ServiceError(ErrorCode.LLM_TIMEOUT, f"LLM 流式请求超时（{cfg['timeout']}s）")
+        except Exception:
+            _cb_record_failure()
+            raise
+    raise last_exc or ServiceError(ErrorCode.LLM_GENERATION_FAILED, "LLM 流式请求失败")
 
 
 def generate_json(

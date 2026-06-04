@@ -439,6 +439,18 @@ def node_resource_planner(state: WorkflowState) -> WorkflowState:
     else:
         resource_type_strs = list(dict.fromkeys(intent_prefs + requested_types)) if intent_prefs else requested_types
 
+    # Incorporate path agent's per-node recommended resource types
+    learning_path = state.get("learning_path", {})
+    path_nodes = learning_path.get("nodes", [])
+    path_types: list[str] = []
+    for pnode in path_nodes:
+        for rt in pnode.get("recommended_resource_types", []):
+            rt_str = rt.value if hasattr(rt, "value") else str(rt)
+            if rt_str not in path_types:
+                path_types.append(rt_str)
+    if path_types:
+        resource_type_strs = list(dict.fromkeys(path_types + resource_type_strs))
+
     # Filter to valid types only
     valid_types = [rt for rt in resource_type_strs if rt in ("document", "quiz", "mindmap", "code_case", "video", "animation", "reading", "flowchart")]
 
@@ -523,6 +535,25 @@ def _make_resource_node(resource_type: str):
             logger.exception("Resource generation failed for %s", resource_type)
             _emit_trace({"agent_name": node, "stage": "langgraph_node", "status": "failed", "progress": 0, "hint": f"{resource_type}: 失败 -- {exc}", "node": node, "duration_ms": duration_ms})
             _log_node_event(node, duration_ms, "failed", wf_id, uid, error=str(exc))
+
+            # Fallback: search the web for existing resources
+            try:
+                from app.services.web_search_service import search_resources, format_as_web_resource
+                _emit_trace({"agent_name": node, "stage": "fallback", "status": "running", "progress": 50, "hint": f"{resource_type}: 正在搜索网络资源...", "node": node, "duration_ms": 0})
+                web_results = search_resources(kp, resource_type, top_k=5)
+                if web_results:
+                    fallback_resource = format_as_web_resource(web_results, resource_type, kp)
+                    duration_ms = int((time.monotonic() - t0) * 1000)
+                    _emit_trace({"agent_name": node, "stage": "fallback", "status": "done", "progress": 100, "hint": f"{resource_type}: 找到 {len(web_results)} 个网络资源", "node": node, "duration_ms": duration_ms})
+                    _log_node_event(node, duration_ms, "web_fallback", wf_id, uid)
+                    return {
+                        "generated_resources": [fallback_resource],
+                        **_record_completion(state, node),
+                        **_record_timing(state, node, duration_ms),
+                    }
+            except Exception:
+                logger.debug("Web search fallback also failed for %s", resource_type)
+
             return {
                 "generated_resources": [{
                     "resource_type": resource_type,
@@ -627,7 +658,7 @@ def node_quality_agent(state: WorkflowState) -> WorkflowState:
         if will_retry:
             out["generated_resources"] = [_REPLACE_SENTINEL]
             # Bump difficulty on retry so regenerated content differs
-            current_diff = state.get("difficulty", "beginner")
+            current_diff = state.get("difficulty", "easy")
             if current_diff == "beginner":
                 out["difficulty"] = "intermediate"
             elif current_diff == "intermediate":
@@ -640,6 +671,7 @@ def node_quality_agent(state: WorkflowState) -> WorkflowState:
         _log_node_event(node, duration_ms, "failed", wf_id, uid, error=str(exc))
         return {
             "quality_report": {"status": "degraded", "quality_score": 0.5, "feedback": str(exc)},
+            "quality_retry_count": state.get("quality_retry_count", 0) + 1,
             **_record_error(state, node, exc),
             **_record_timing(state, node, duration_ms),
             **_record_completion(state, node),
@@ -720,18 +752,14 @@ def node_tutor_agent(state: WorkflowState) -> WorkflowState:
     try:
         from app.services import tutor_service
         user_id = UUID(state["user_id"])
-        result = tutor_service.answer_question(
+        result = tutor_service.answer_question_with_callback(
             user_id,
             state.get("message", ""),
+            on_token=lambda text: _emit_text_delta(node, text),
             conversation_id=UUID(state["conversation_id"]) if state.get("conversation_id") else None,
             knowledge_point=state.get("knowledge_point"),
             base_agent_id=UUID(state["base_agent_id"]) if state.get("base_agent_id") else None,
         )
-        # Stream the answer text for progressive display
-        answer_text = result.get("markdown") or result.get("answer", "")
-        if answer_text:
-            for i in range(0, len(answer_text), 8):
-                _emit_text_delta(node, answer_text[i:i+8])
         duration_ms = int((time.monotonic() - t0) * 1000)
         _emit_trace({"agent_name": node, "stage": "langgraph_node", "status": "done", "progress": 100, "hint": f"TutorAgent: 回答完成 ({duration_ms}ms)", "node": node, "duration_ms": duration_ms, "data": {"tutor_answer": result}})
         _log_node_event(node, duration_ms, "success", wf_id, uid)
@@ -855,6 +883,9 @@ def node_aggregate(state: WorkflowState) -> WorkflowState:
         "gen_mindmap": (AgentName.DOCUMENT, "resource_generate"),
         "gen_code_case": (AgentName.DOCUMENT, "resource_generate"),
         "gen_video": (AgentName.DOCUMENT, "resource_generate"),
+        "gen_animation": (AgentName.DOCUMENT, "resource_generate"),
+        "gen_reading": (AgentName.DOCUMENT, "resource_generate"),
+        "gen_flowchart": (AgentName.FLOWCHART, "resource_generate"),
         "quality_agent": (AgentName.QUALITY, "quality_check"),
         "recommendation_agent": (AgentName.RECOMMENDATION, "recommendation_generate"),
         "assess_agent": (AgentName.PROFILE, "assessment"),

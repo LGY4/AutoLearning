@@ -60,3 +60,9 @@ claude-project-debug.log
 
 # ── Project artifacts ──
 chat-page.png
+
+# Debug/test artifacts
+backend/_debug_script.txt
+backend/_error.txt
+backend/_test/
+*.docx

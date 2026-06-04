@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 from typing import Optional
 
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_BACKEND_DIR = Path(__file__).resolve().parents[2]
 
 
 class Settings(BaseSettings):
@@ -25,10 +28,10 @@ class Settings(BaseSettings):
     # LLM - OpenAI-compatible API (works with DeepSeek, OpenAI, Ollama, vLLM, etc.)
     llm_api_base: str = "https://api.deepseek.com/v1"
     llm_api_key: Optional[str] = None
-    llm_model: str = "deepseek-chat"
+    llm_model: str = "deepseek-v4-pro"
     llm_max_tokens: int = 4096
     llm_temperature: float = 0.4
-    llm_timeout_seconds: int = 60
+    llm_timeout_seconds: int = 120
     # LangGraph runtime
     langgraph_max_workers: int = 1
     langgraph_timeout_seconds: int = 300
@@ -49,10 +52,19 @@ class Settings(BaseSettings):
     spark_json_retries: int = 2
     # HuggingFace image generation
     hf_token: Optional[str] = None
-    hf_endpoint: str = "https://api-inference.hf-mirror.com"
+    hf_endpoint: str = "https://api-inference.huggingface.co"
+    # Xfyun digital human video
+    xfyun_dh_app_id: str = ""
+    xfyun_dh_api_key: str = ""
+    xfyun_dh_api_secret: str = ""
+    xfyun_dh_api_url: str = "vms.cn-huadong-1.xf-yun.com"
+    xfyun_dh_persona_id: str = ""
+    xfyun_dh_voice_id: str = ""
+    # CORS
+    cors_origins: Optional[str] = None  # comma-separated list of allowed origins
 
     model_config = SettingsConfigDict(
-        env_file=".env",
+        env_file=str(_BACKEND_DIR / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
     )
@@ -67,6 +79,20 @@ class Settings(BaseSettings):
             # Deterministic dev key — stable across workers, safe to lose
             import hashlib
             self.secret_key = hashlib.sha256(b"autolearning-dev-secret-key").hexdigest()
+
+        if not self.llm_api_key:
+            if self.environment == "production":
+                raise ValueError("LLM_API_KEY must be set in production")
+
+    def __repr__(self) -> str:
+        def _mask(val: Optional[str]) -> str:
+            if not val:
+                return "***"
+            return val[:4] + "***" + val[-4:] if len(val) > 12 else "***"
+        return (
+            f"Settings(app_name={self.app_name!r}, environment={self.environment!r}, "
+            f"llm_api_key={_mask(self.llm_api_key)}, database_url=***, secret_key=***)"
+        )
 
 
 @lru_cache

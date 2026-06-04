@@ -3,11 +3,14 @@ from __future__ import annotations
 from typing import Dict,  List,  Optional
 
 import json
+import logging
 import urllib.request
 
 import httpx
 
 from app.core.config import get_settings
+
+_logger = logging.getLogger(__name__)
 
 
 _LAST_STATUS: Dict[str, str | bool | Optional[int]] = {}
@@ -147,6 +150,7 @@ def embed_text(text: str) -> List[float]:
 
     # Fallback: simple TF-IDF-like hash embedding (development only)
     if settings.embedding_allow_fallback:
+        _logger.warning("Embedding provider '%s' unavailable — using deterministic fallback (RAG will use keyword search)", provider)
         vector = _deterministic_embed(text)
         _LAST_STATUS.update({
             "provider": provider,

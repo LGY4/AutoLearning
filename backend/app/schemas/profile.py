@@ -203,7 +203,7 @@ class LearningPreference(BaseModel):
 class LearningBehavior(BaseModel):
     average_study_minutes: int = 45
     active_period: str = "evening"
-    completion_rate: float = 0.0
+    completion_rate: float = Field(default=0.0, ge=0.0, le=1.0)
     recent_scores: List[int] = Field(default_factory=list)
     last_knowledge_point: Optional[str] = None
 
@@ -240,9 +240,9 @@ class CognitiveProfile(BaseModel):
 
 
 class DynamicUpdate(BaseModel):
-    last_updated_at: str
-    update_source: str
-    update_reason: str
+    last_updated_at: str = ""
+    update_source: str = "unknown"
+    update_reason: str = ""
 
 
 class StudentProfile(BaseModel):
@@ -262,6 +262,6 @@ class StudentProfile(BaseModel):
 
 class ProfileExtractRequest(BaseModel):
     user_id: UUID
-    conversation: List[Dict[str, str]]
+    conversation: List[Dict[str, str]] = Field(default_factory=list)
     learning_behavior: Optional[dict] = None
     base_agent_id: Optional[UUID] = None

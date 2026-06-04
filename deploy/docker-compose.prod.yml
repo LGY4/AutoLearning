@@ -1,0 +1,41 @@
+# 生产环境 Docker Compose 覆盖配置
+# 使用方式: cd infra && docker compose -f docker-compose.yml -f ../deploy/docker-compose.prod.yml up -d
+
+services:
+  backend:
+    restart: always
+    environment:
+      ENVIRONMENT: production
+      SECRET_KEY: ${SECRET_KEY}
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: "2"
+
+  celery-worker:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1"
+
+  frontend:
+    restart: always
+
+  postgres:
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+
+  redis:
+    restart: always
+
+  minio:
+    restart: always
+    ports:
+      - "9000:9000"
+      - "9001:9001"

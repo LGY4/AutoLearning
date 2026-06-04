@@ -56,8 +56,8 @@ class StudentProfileModel(Base):
     user_id = Column(UUID(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False, index=True)
     profile_json = Column(JSONB, nullable=False)
     profile_version = Column(Integer, default=1)
-    completeness_score = Column(Numeric(5, 2))
-    confidence_score = Column(Numeric(5, 2))
+    completeness_score = Column(Numeric(3, 2))
+    confidence_score = Column(Numeric(3, 2))
     updated_by = Column(String(64))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
@@ -77,7 +77,7 @@ class StudentProfileHistory(Base):
     change_reason = Column(Text)
     source_type = Column(String(64))
     source_id = Column(UUID(as_uuid=True))
-    confidence_score = Column(Numeric(5, 2))
+    confidence_score = Column(Numeric(3, 2))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
     profile = relationship("StudentProfileModel", back_populates="history")
@@ -147,7 +147,7 @@ class LearningResourceModel(Base):
     status = Column(String(32), default="draft", index=True)
     current_version = Column(Integer, default=1)
     generated_by_agent_id = Column(UUID(as_uuid=True))
-    quality_score = Column(Numeric(5, 2))
+    quality_score = Column(Numeric(3, 2))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
@@ -231,7 +231,7 @@ class AgentTaskModel(Base):
     progress = Column(Integer, default=0)
     error_message = Column(Text)
     retry_count = Column(Integer, default=0)
-    parent_task_id = Column(UUID(as_uuid=True))
+    parent_task_id = Column(UUID(as_uuid=True), ForeignKey("agent_task.id", ondelete="SET NULL"))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     started_at = Column(DateTime(timezone=True))
     finished_at = Column(DateTime(timezone=True))
@@ -283,7 +283,7 @@ class RecommendationRecord(Base):
     path_id = Column(UUID(as_uuid=True), ForeignKey("learning_path.id", ondelete="SET NULL"), index=True)
     recommend_reason = Column(JSONB)
     profile_snapshot = Column(JSONB)
-    score = Column(Numeric(5, 2))
+    score = Column(Numeric(3, 2))
     status = Column(String(32), default="pushed")
     clicked = Column(Boolean, default=False)
     completed = Column(Boolean, default=False)
@@ -417,4 +417,53 @@ class ProfileEventModel(Base):
     status = Column(String(32), nullable=False, default="pending")
     applied_at = Column(DateTime(timezone=True))
     error_message = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+
+class VideoTask(Base):
+    __tablename__ = "video_task"
+
+    id = uuid_pk()
+    user_id = Column(UUID(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False, index=True)
+    task_id = Column(String(32), unique=True, nullable=False, index=True)
+    mode = Column(String(20), nullable=False)  # "classic" | "digital_human"
+    status = Column(String(20), nullable=False, default="pending")
+    topic = Column(String(500), nullable=False)
+    subject = Column(String(100), default="通用")
+    style = Column(String(50), default="educational")
+    result = Column(JSONB, nullable=True)
+    error = Column(Text, nullable=True)
+    progress = Column(JSONB, default=list)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class MediaTask(Base):
+    __tablename__ = "media_task"
+
+    id = uuid_pk()
+    user_id = Column(UUID(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False, index=True)
+    task_id = Column(String(32), unique=True, nullable=False, index=True)
+    media_type = Column(String(20), nullable=False)  # "animation" | "image" | "analysis"
+    status = Column(String(20), nullable=False, default="pending")
+    topic = Column(String(500), nullable=False)
+    subject = Column(String(100), default="")
+    params = Column(JSONB, default=dict)
+    result = Column(JSONB, nullable=True)
+    error = Column(Text, nullable=True)
+    progress = Column(JSONB, default=list)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+
+
+class AssessmentSnapshotModel(Base):
+    __tablename__ = "assessment_snapshot"
+
+    id = uuid_pk()
+    user_id = Column(UUID(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False, index=True)
+    mastery_score = Column(Numeric(5, 2), nullable=False)
+    confidence = Column(Numeric(5, 2), nullable=False)
+    stage = Column(String(32), default="unknown")
+    weak_point_count = Column(Integer, default=0)
+    weak_topics = Column(JSONB, default=list)
     created_at = Column(DateTime(timezone=True), server_default=func.now())

@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { BookOpen, Pencil, Plus, Save, Target, Trash2, X } from "lucide-react";
 import { apiGet, apiPost, apiPatch, apiDelete } from "../api/client";
 import { useAppContext } from "../context/AppContext";
+import type { StudentProfile } from "../types/baseline";
 
 interface Course {
   id: string;
@@ -25,8 +26,17 @@ interface Goal {
 }
 
 export function CoursePage() {
-  const { state } = useAppContext();
+  const { state, dispatch } = useAppContext();
   const isAdmin = state.user?.role === "admin";
+
+  const refreshProfile = useCallback(async () => {
+    try {
+      const profile = await apiGet<StudentProfile>("/profiles/me");
+      dispatch({ type: "SET_PROFILE", payload: profile });
+    } catch {
+      // Best effort
+    }
+  }, [dispatch]);
 
   const [courses, setCourses] = useState<Course[]>([]);
   const [goals, setGoals] = useState<Goal[]>([]);
@@ -111,6 +121,7 @@ export function CoursePage() {
       await apiPost("/courses/goals", goalForm);
       setShowGoalForm(false);
       setGoalForm({ goal_title: "", goal_description: "", target_level: "", deadline: "" });
+      await refreshProfile();
       loadData();
     } catch {
       setError("创建目标失败");
@@ -122,6 +133,7 @@ export function CoursePage() {
     try {
       await apiDelete(`/courses/goals/${id}`);
       setGoals(goals.filter((g) => g.id !== id));
+      await refreshProfile();
     } catch {
       setError("删除失败");
     }
@@ -138,6 +150,7 @@ export function CoursePage() {
       const updated = await apiPatch<Goal>(`/courses/goals/${editingGoalId}`, editGoalForm);
       setGoals(goals.map((g) => g.id === editingGoalId ? { ...g, ...updated } : g));
       setEditingGoalId(null);
+      await refreshProfile();
     } catch {
       setError("保存失败");
     }

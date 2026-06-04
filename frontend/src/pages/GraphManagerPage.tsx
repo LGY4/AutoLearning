@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from "react";
+import { useNavigate } from "react-router-dom";
 import { apiGet, apiPost, apiDelete, apiPostForm } from "../api/client";
+import { useAppContext } from "../context/AppContext";
 import { GraphViz } from "../components/graph/GraphViz";
 
 interface GraphSummary {
@@ -81,6 +83,10 @@ const STATUS_COLORS: Record<string, string> = {
 };
 
 export function GraphManagerPage() {
+  const { state } = useAppContext();
+  const navigate = useNavigate();
+  const isAdmin = state.user?.role === "admin" || state.user?.role === "teacher";
+
   const [graphs, setGraphs] = useState<GraphSummary[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [detail, setDetail] = useState<GraphDetail | null>(null);
@@ -112,7 +118,7 @@ export function GraphManagerPage() {
     }
   }, []);
 
-  useEffect(() => { loadGraphs(); }, [loadGraphs]);
+  useEffect(() => { if (isAdmin) loadGraphs(); }, [loadGraphs, isAdmin]);
 
   const loadKnowledgeStatus = useCallback(async () => {
     try {
@@ -246,6 +252,28 @@ export function GraphManagerPage() {
       setError(err instanceof Error ? err.message : "删除图谱失败");
     }
   };
+
+  if (!state.user) {
+    return (
+      <div className="page-center">
+        <p>请先登录</p>
+      </div>
+    );
+  }
+
+  if (!isAdmin) {
+    return (
+      <div className="page-center">
+        <div className="map-empty">
+          <h2>知识图谱管理</h2>
+          <p>此功能仅限管理员和教师使用。</p>
+          <button type="button" className="map-btn-start" style={{ marginTop: 12 }} onClick={() => navigate("/map")}>
+            查看学习地图
+          </button>
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div className="graph-mgr">

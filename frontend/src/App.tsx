@@ -1,7 +1,7 @@
-import { lazy, Suspense, useEffect, useState } from "react";
-import { Routes, Route, useNavigate, useLocation } from "react-router-dom";
+import { lazy, Suspense, useCallback, useEffect, useMemo, useState } from "react";
+import { Routes, Route, Navigate, useNavigate, useLocation } from "react-router-dom";
 import { Menu, X } from "lucide-react";
-import { useAppContext, EMPTY_PROFILE, EMPTY_PATH } from "./context/AppContext";
+import { useAppContext, EMPTY_PATH } from "./context/AppContext";
 import { useAuth } from "./hooks/useAuth";
 import { useLearning } from "./hooks/useLearning";
 import { ErrorBoundary } from "./components/common/ErrorBoundary";
@@ -21,12 +21,11 @@ const LearningMapPage = lazy(() => import("./pages/LearningMapPage").then((m) =>
 const PracticePage = lazy(() => import("./pages/PracticePage").then((m) => ({ default: m.PracticePage })));
 const GraphManagerPage = lazy(() => import("./pages/GraphManagerPage").then((m) => ({ default: m.GraphManagerPage })));
 const ResourceLibraryPage = lazy(() => import("./pages/ResourceLibraryPage").then((m) => ({ default: m.ResourceLibraryPage })));
-const TutorPage = lazy(() => import("./pages/TutorPage").then((m) => ({ default: m.TutorPage })));
 const VideoStudioPage = lazy(() => import("./pages/VideoStudioPage").then((m) => ({ default: m.VideoStudioPage })));
 const CoursePage = lazy(() => import("./pages/CoursePage").then((m) => ({ default: m.CoursePage })));
-const ProfileEditPage = lazy(() => import("./pages/ProfileEditPage").then((m) => ({ default: m.ProfileEditPage })));
 const MediaStudioPage = lazy(() => import("./pages/MediaStudioPage").then((m) => ({ default: m.MediaStudioPage })));
-const LearningPathPage = lazy(() => import("./pages/LearningPathPage").then((m) => ({ default: m.LearningPathPage })));
+
+const ALLOWED_INCOMPLETE = ["/", "/dashboard", "/courses", "/resources"];
 
 function App() {
   const { state, dispatch } = useAppContext();
@@ -34,25 +33,74 @@ function App() {
   const { loadConversation } = useLearning();
   const navigate = useNavigate();
   const location = useLocation();
+  const corePagePreloaders = useMemo(
+    () => [
+      () => import("./pages/LearningPage"),
+      () => import("./pages/DashboardPage"),
+      () => import("./pages/LearningMapPage"),
+      () => import("./pages/PracticePage"),
+    ],
+    []
+  );
   const [authOpen, setAuthOpen] = useState(false);
   const [createAgentOpen, setCreateAgentOpen] = useState(false);
   const [selectAgentOpen, setSelectAgentOpen] = useState(false);
   const [modelConfigOpen, setModelConfigOpen] = useState(false);
   const [mobileSidebarOpen, setMobileSidebarOpen] = useState(false);
+  const [appInitializing, setAppInitializing] = useState(true);
 
   useEffect(() => {
-    initAuth().then((ok) => {
-      if (!ok) setAuthOpen(true);
+    let mounted = true;
+    void initAuth().then((ok) => {
+      if (!mounted) return;
+      if (!ok) { dispatch({ type: "SET_ERROR", payload: null }); setAuthOpen(true); }
+      setAppInitializing(false);
     });
-  }, []);
+    return () => {
+      mounted = false;
+    };
+  }, [initAuth]);
 
-  // Redirect to home if profile is incomplete (force diagnostic)
-  const ALLOWED_INCOMPLETE = ["/", "/profile-edit"];
+  // Redirect to home if profile is incomplete (force diagnostic).
+  // Bypasses redirect if user already completed diagnostic (localStorage flag).
+  // Only fires after profile has actually been loaded from server.
   useEffect(() => {
-    if (state.user && state.profile.completeness_score <= 0.5 && !ALLOWED_INCOMPLETE.includes(location.pathname)) {
-      navigate("/", { replace: true });
-    }
-  }, [state.user, state.profile.completeness_score, location.pathname]);
+    if (!state.user || !state.profileLoaded) return;
+    if (ALLOWED_INCOMPLETE.includes(location.pathname)) return;
+    if (state.profile.completeness_score > 0.5) return;
+    if (localStorage.getItem(`diagnostic_completed_${state.user.id}`)) return;
+    navigate("/", { replace: true });
+  }, [location.pathname, navigate, state.profile.completeness_score, state.profileLoaded, state.user]);
+
+  useEffect(() => {
+    setMobileSidebarOpen(false);
+  }, [location.pathname]);
+
+  useEffect(() => {
+    if (appInitializing || !state.user) return;
+    corePagePreloaders.forEach((preload) => {
+      void preload();
+    });
+  }, [appInitializing, corePagePreloaders, state.user]);
+
+  useEffect(() => {
+    if (!mobileSidebarOpen) return;
+
+    const previousOverflow = document.body.style.overflow;
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        setMobileSidebarOpen(false);
+      }
+    };
+
+    document.body.style.overflow = "hidden";
+    window.addEventListener("keydown", handleKeyDown);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      window.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [mobileSidebarOpen]);
 
   const handleAuthSubmit = async (payload: {
     username: string;
@@ -97,12 +145,65 @@ function App() {
     }
   };
 
+  const handleNewSession = useCallback(() => {
+    navigate("/chat");
+    dispatch({ type: "SET_SELECTED_CONVERSATION", payload: null });
+    dispatch({ type: "SET_ACTIVE_MESSAGES", payload: [] });
+    dispatch({ type: "SET_WORKFLOW", payload: null });
+    dispatch({ type: "SET_ERROR", payload: null });
+    setMobileSidebarOpen(false);
+  }, [dispatch, navigate]);
+
+  const handleLoadHistory = useCallback(() => {
+    void loadUserBundle();
+  }, [loadUserBundle]);
+
+  const handleLoadConversation = useCallback((id: string, _conversationType?: string) => {
+    navigate("/chat");
+    void loadConversation(id);
+    setMobileSidebarOpen(false);
+  }, [loadConversation, navigate]);
+
+  const handleNavigate = useCallback((path: string) => {
+    navigate(path);
+    setMobileSidebarOpen(false);
+  }, [navigate]);
+
   const pageProps = {
-    onAuth: () => setAuthOpen(true),
+    onAuth: () => { dispatch({ type: "SET_ERROR", payload: null }); setAuthOpen(true); },
     onCreateAgent: () => setCreateAgentOpen(true),
     onSelectAgent: () => setSelectAgentOpen(true),
     onModelConfig: () => setModelConfigOpen(true),
   };
+
+  if (appInitializing) {
+    return (
+      <main className="app-shell-loading" aria-busy="true" aria-live="polite">
+        <div className="app-shell-loading-card">
+          <div className="loading-logo">
+            <span className="loading-logo-icon">A</span>
+          </div>
+          <h1>AutoLearning</h1>
+          <p className="loading-subtitle">AI 自适应学习平台</p>
+          <div className="loading-steps">
+            <div className="loading-step active">
+              <span className="loading-step-dot" />
+              <span>验证身份</span>
+            </div>
+            <div className="loading-step active">
+              <span className="loading-step-dot" />
+              <span>加载画像</span>
+            </div>
+            <div className="loading-step active">
+              <span className="loading-step-dot" />
+              <span>同步数据</span>
+            </div>
+          </div>
+          <Spinner />
+        </div>
+      </main>
+    );
+  }
 
   return (
     <main className="learning-shell dark-layout">
@@ -121,47 +222,48 @@ function App() {
       />
 
       <Sidebar
-        onAuth={() => setAuthOpen(true)}
-        onNewSession={() => {
-          navigate("/chat");
-          dispatch({ type: "SET_SELECTED_CONVERSATION", payload: null });
-          dispatch({ type: "SET_ACTIVE_MESSAGES", payload: [] });
-          dispatch({ type: "SET_PROFILE", payload: EMPTY_PROFILE });
-          dispatch({ type: "SET_PATH", payload: EMPTY_PATH });
-          dispatch({ type: "SET_RESOURCES", payload: [] });
-          dispatch({ type: "SET_RECOMMENDATIONS", payload: [] });
-          dispatch({ type: "SET_WORKFLOW", payload: null });
-          dispatch({ type: "SET_ERROR", payload: null });
-          setMobileSidebarOpen(false);
+        onAuth={() => { dispatch({ type: "SET_ERROR", payload: null }); setAuthOpen(true); }}
+        onNewSession={handleNewSession}
+        onLoadHistory={handleLoadHistory}
+        onLoadConversation={(id, type) => handleLoadConversation(id, type)}
+        onNavigate={handleNavigate}
+        onSendMessage={(msg) => {
+          if (location.pathname === "/chat") {
+            dispatch({ type: "SET_PENDING_MESSAGE", payload: msg });
+          } else {
+            navigate("/chat");
+            setTimeout(() => dispatch({ type: "SET_PENDING_MESSAGE", payload: msg }), 300);
+          }
         }}
-        onLoadHistory={() => loadUserBundle()}
-        onLoadConversation={(id, _conversationType) => {
-          navigate("/chat");
-          loadConversation(id);
-          setMobileSidebarOpen(false);
-        }}
-        onNavigate={(path) => { navigate(path); setMobileSidebarOpen(false); }}
         activePath={location.pathname}
         mobileOpen={mobileSidebarOpen}
       />
 
       <section className="learning-main">
         <ErrorBoundary>
-          <Suspense fallback={<div style={{ display: "flex", justifyContent: "center", alignItems: "center", height: "100%" }}><Spinner /></div>}>
+          <Suspense
+            fallback={
+              <div className="route-fallback" aria-live="polite">
+                <Spinner />
+                <p>页面加载中...</p>
+              </div>
+            }
+          >
             <Routes>
-              <Route path="/" element={<HomePage onAuth={() => setAuthOpen(true)} />} />
+              <Route path="/" element={<HomePage onAuth={() => { dispatch({ type: "SET_ERROR", payload: null }); setAuthOpen(true); }} />} />
               <Route path="/chat" element={<LearningPage {...pageProps} />} />
               <Route path="/dashboard" element={<DashboardPage />} />
               <Route path="/map" element={<LearningMapPage />} />
               <Route path="/practice" element={<PracticePage />} />
               <Route path="/graphs" element={<GraphManagerPage />} />
               <Route path="/resources" element={<ResourceLibraryPage />} />
-              <Route path="/tutor" element={<TutorPage />} />
+              <Route path="/tutor" element={<Navigate to="/chat" replace />} />
               <Route path="/video-studio" element={<VideoStudioPage />} />
               <Route path="/courses" element={<CoursePage />} />
-              <Route path="/profile-edit" element={<ProfileEditPage />} />
+              <Route path="/profile-edit" element={<Navigate to="/dashboard" replace />} />
               <Route path="/media-studio" element={<MediaStudioPage />} />
-              <Route path="/learning-path" element={<LearningPathPage />} />
+              <Route path="/learning-path" element={<Navigate to="/map" replace />} />
+              <Route path="*" element={<Navigate to="/" replace />} />
             </Routes>
           </Suspense>
         </ErrorBoundary>
@@ -187,6 +289,26 @@ function App() {
       />
 
       <ModelConfigModal open={modelConfigOpen} onClose={() => setModelConfigOpen(false)} />
+
+      {/* Global toast notification */}
+      {state.notice && (
+        <div
+          className="global-toast"
+          onClick={() => dispatch({ type: "SET_NOTICE", payload: null })}
+          role="alert"
+        >
+          {state.notice}
+        </div>
+      )}
+      {state.error && !authOpen && (
+        <div
+          className="global-toast error"
+          onClick={() => dispatch({ type: "SET_ERROR", payload: null })}
+          role="alert"
+        >
+          {state.error}
+        </div>
+      )}
     </main>
   );
 }

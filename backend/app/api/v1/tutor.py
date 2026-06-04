@@ -15,7 +15,6 @@ from app.services.model_gateway import ModelOverride, model_override_context
 
 
 class TutorChatRequest(BaseModel):
-    user_id: UUID
     question: str
     conversation_id: Optional[UUID] = None
     knowledge_point: Optional[str] = None
@@ -23,6 +22,7 @@ class TutorChatRequest(BaseModel):
     model_provider: Optional[str] = None
     model_name: Optional[str] = None
     model_temperature: Optional[float] = None
+    rag_context: Optional[List[dict]] = None
 
 
 class TutorChatResponse(BaseModel):
@@ -35,6 +35,8 @@ class TutorChatResponse(BaseModel):
     diagram_prompt: Optional[str] = None
     references: Optional[List[str]] = None
     question: str
+    knowledge_point: Optional[str] = None
+    resource_recommendation: Optional[dict] = None
 
 
 router = APIRouter()
@@ -42,7 +44,6 @@ router = APIRouter()
 
 @router.post("/chat", response_model=ApiResponse[TutorChatResponse])
 def chat(payload: TutorChatRequest, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[TutorChatResponse]:
-    payload.user_id = current_user.id
     session = conversation_service.append_message(
         current_user.id,
         role="user",
@@ -64,6 +65,7 @@ def chat(payload: TutorChatRequest, current_user: UserDTO = Depends(get_current_
             conversation_id=session.conversation_id,
             knowledge_point=payload.knowledge_point,
             base_agent_id=payload.base_agent_id,
+            rag_context=payload.rag_context,
         )
     conversation_service.append_message(
         current_user.id,
@@ -71,11 +73,25 @@ def chat(payload: TutorChatRequest, current_user: UserDTO = Depends(get_current_
         content=result["markdown"],
         conversation_id=session.conversation_id,
         intent="tutor_answer",
-        metadata={"rag_references": result.get("rag_references", [])},
+        metadata={
+            "rag_references": result.get("rag_references", []),
+            "intent_result": {
+                "intent": "tutoring", "confidence": 1.0, "method": "tutor",
+                "result": {
+                    "answer": result.get("answer", ""),
+                    "markdown": result.get("markdown", ""),
+                    "rag_references": result.get("rag_references", []),
+                    "next_step": result.get("next_step"),
+                    "knowledge_point": result.get("knowledge_point"),
+                    "resource_recommendation": result.get("resource_recommendation"),
+                    "videos": result.get("videos", []),
+                },
+            },
+        },
         conversation_type="tutor",
     )
     return success(TutorChatResponse(
-        user_id=payload.user_id,
+        user_id=current_user.id,
         conversation_id=session.conversation_id,
         answer=result["answer"],
         markdown=result["markdown"],
@@ -84,4 +100,6 @@ def chat(payload: TutorChatRequest, current_user: UserDTO = Depends(get_current_
         diagram_prompt=result.get("diagram_prompt"),
         references=result.get("references"),
         question=payload.question,
+        knowledge_point=result.get("knowledge_point"),
+        resource_recommendation=result.get("resource_recommendation"),
     ))

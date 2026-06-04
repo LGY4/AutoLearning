@@ -32,5 +32,7 @@ def get_optional_user(
         return None
     try:
         return current_user(cred.credentials)
-    except HTTPException:
-        return None
+    except HTTPException as exc:
+        if exc.status_code == 401:
+            return None
+        raise

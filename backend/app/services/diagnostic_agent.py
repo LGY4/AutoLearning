@@ -620,15 +620,29 @@ def score_diagnostic(
     total = len(questions)
     correct = 0
     topic_results: Dict[str, List[bool]] = {}
+    answer_details = []
 
     for q in questions:
         qid = q["id"]
         topic = q.get("topic", "未知")
         user_answer = answers.get(qid, "").strip().upper()
-        is_correct = user_answer == q.get("answer", "").strip().upper()
+        correct_answer = q.get("answer", "").strip().upper()
+        is_correct = user_answer == correct_answer
         if is_correct:
             correct += 1
         topic_results.setdefault(topic, []).append(is_correct)
+        answer_details.append({
+            "id": qid,
+            "topic": topic,
+            "difficulty": q.get("difficulty", 1),
+            "dimension_test": q.get("dimension_test", ""),
+            "question": q.get("question", ""),
+            "options": q.get("options", []),
+            "user_answer": user_answer,
+            "correct_answer": correct_answer,
+            "is_correct": is_correct,
+            "explanation": q.get("explanation", ""),
+        })
 
     # Try LLM-based dimension scoring
     raw = _evaluate_dimensions(major, grade, goal, subject, quiz, answers)
@@ -724,7 +738,19 @@ def score_diagnostic(
 
     # Save profile via event
     from app.services.profile_event_service import ProfileEventType, emit_event
-    emit_event(user_id, ProfileEventType.DIAGNOSTIC_QUIZ, profile.model_dump(), confidence=0.9)
+    from app.repositories.vertical_loop_repository import repository
+    emit_event(user_id, ProfileEventType.DIAGNOSTIC_QUIZ, profile.model_dump(mode="json"), confidence=0.9)
+
+    # Verify profile was actually persisted (event may have failed)
+    saved_profile = repository.get_profile(user_id)
+    if not saved_profile or saved_profile.completeness_score < 0.5:
+        # Fallback: direct save bypassing event system
+        profile_to_save = profile.model_copy(update={"version": (saved_profile.version if saved_profile else 0) + 1})
+        try:
+            repository.save_profile(profile_to_save)
+            saved_profile = profile_to_save
+        except Exception:
+            pass  # Best effort — event system already tried
 
     # Build assessment snapshot
     assessment = {
@@ -768,12 +794,13 @@ def score_diagnostic(
     }
 
     return {
-        "profile": profile.model_dump(mode="json"),
+        "profile": (saved_profile or profile).model_dump(mode="json"),
         "assessment": assessment,
         "quiz_result": {
             "total": total,
             "correct": correct,
             "accuracy": round(correct / max(total, 1), 2),
             "topic_breakdown": {t: {"correct": sum(r), "total": len(r)} for t, r in topic_results.items()},
+            "answer_details": answer_details,
         },
     }

@@ -47,6 +47,8 @@ def start_learning(
 ) -> LearningStartResponse:
     override = ModelOverride(
         provider=request.model_provider,
+        api_base=request.model_api_base,
+        api_key=request.model_api_key,
         model_name=request.model_name,
         temperature=request.model_temperature,
     )
@@ -63,6 +65,8 @@ def start_learning_langgraph(
 
     override = ModelOverride(
         provider=request.model_provider,
+        api_base=request.model_api_base,
+        api_key=request.model_api_key,
         model_name=request.model_name,
         temperature=request.model_temperature,
     )
@@ -132,11 +136,30 @@ def _convert_langgraph_result(
             f"{len(resources)} 份学习资源。"
         )
 
+    # Build intent_result for frontend rendering on reload
+    ir_result: dict = {}
+    if intent == "tutoring":
+        ta = result.get("tutor_answer", {})
+        ir_result = {"answer": ta.get("answer", ""), "markdown": ta.get("markdown", reply), "knowledge_point": knowledge_point}
+    elif intent == "resource_generation":
+        ir_result = {"resources": [r.model_dump(mode="json") for r in resources]}
+    elif intent == "general_chat":
+        ir_result = {"reply": reply}
+    else:
+        ir_result = {
+            "title": path.title, "nodes": [{"knowledge_point": n.knowledge_point, "status": n.status, "order": n.order} for n in path.nodes],
+            "resources": [r.model_dump(mode="json") for r in resources],
+        }
+
     session = conversation_service.append_message(
         request.user_id, role="assistant", content=reply,
         conversation_id=session.conversation_id, intent="learning_result",
         profile_id=profile.profile_id,
-        metadata={"workflow_id": str(wf_id), "resource_ids": [str(r.resource_id) for r in resources]},
+        metadata={
+            "workflow_id": str(wf_id),
+            "resource_ids": [str(r.resource_id) for r in resources],
+            "intent_result": {"intent": intent, "confidence": 1.0, "method": "langgraph", "result": ir_result},
+        },
     )
 
     return LearningStartResponse(
@@ -187,6 +210,8 @@ def _start_intent_based(
         return _run_assessment(request, wf_id, emit)
     elif intent == Intent.EXERCISE:
         return _run_exercise(request, wf_id, emit)
+    elif intent == Intent.RESOURCE_GENERATION:
+        return _run_resource_generation(request, wf_id, emit)
     elif intent == Intent.GENERAL_CHAT:
         return _run_general_chat(request, wf_id, emit)
     else:
@@ -305,6 +330,18 @@ def _run_tutoring(request: LearningStartRequest, wf_id: UUID, emit) -> LearningS
         request.user_id, role="assistant", content=answer,
         conversation_id=session.conversation_id, intent="tutoring_result",
         profile_id=profile.profile_id,
+        metadata={
+            "intent_result": {
+                "intent": "tutoring", "confidence": 1.0, "method": "learning_service",
+                "result": {
+                    "markdown": answer, "answer": result.get("answer", answer),
+                    "rag_references": result.get("rag_references", []),
+                    "knowledge_point": request.knowledge_point or "",
+                    "videos": result.get("videos", []),
+                    "resource_recommendation": result.get("resource_recommendation"),
+                },
+            },
+        },
     )
 
     workflow = workflow_service.get_workflow(wf_id)
@@ -341,6 +378,17 @@ def _run_assessment(request: LearningStartRequest, wf_id: UUID, emit) -> Learnin
         request.user_id, role="assistant", content="学习评估已完成，请查看右侧评估报告。",
         conversation_id=session.conversation_id, intent="assessment_result",
         profile_id=profile.profile_id,
+        metadata={
+            "intent_result": {
+                "intent": "assessment", "confidence": 1.0, "method": "learning_service",
+                "result": {
+                    "mastery_score": assessment.get("mastery_score") if isinstance(assessment, dict) else None,
+                    "weak_points": assessment.get("weak_points", []) if isinstance(assessment, dict) else [],
+                    "next_suggestions": assessment.get("next_suggestions", []) if isinstance(assessment, dict) else [],
+                    "summary": assessment.get("summary", "") if isinstance(assessment, dict) else "",
+                },
+            },
+        },
     )
 
     workflow = workflow_service.get_workflow(wf_id)
@@ -386,6 +434,16 @@ def _run_exercise(request: LearningStartRequest, wf_id: UUID, emit) -> LearningS
         request.user_id, role="assistant", content=answer_msg,
         conversation_id=session.conversation_id, intent="exercise_result",
         profile_id=profile.profile_id,
+        metadata={
+            "intent_result": {
+                "intent": "exercise", "confidence": 1.0, "method": "learning_service",
+                "result": {
+                    "title": resources[0].title if resources else "练习题",
+                    "content": resources[0].content if resources else "",
+                    "knowledge_point": kp,
+                },
+            },
+        } if resources else None,
     )
 
     workflow = workflow_service.get_workflow(wf_id)
@@ -395,6 +453,96 @@ def _run_exercise(request: LearningStartRequest, wf_id: UUID, emit) -> LearningS
     return LearningStartResponse(
         task_id=uuid4(), workflow_id=wf_id, conversation_id=session.conversation_id,
         status="success", stream_url=f"/api/v1/agent-workflows/{wf_id}/stream",
+        profile=profile, path=path, resources=resources, workflow=workflow,
+        recommendations=[], messages=session.messages,
+    )
+
+
+def _run_resource_generation(request: LearningStartRequest, wf_id: UUID, emit) -> LearningStartResponse:
+    """Intelligent resource generation: profile → strategy → generate."""
+    from app.services import resource_service, adaptive_service
+    from app.schemas.resource import ResourceGenerateRequest
+
+    kp = request.knowledge_point or request.message[:30]
+    session = conversation_service.append_message(
+        request.user_id, role="user", content=request.message,
+        conversation_id=request.conversation_id, intent="resource_generation",
+        title=kp or "资源生成",
+    )
+
+    profile = profile_service.get_or_create_profile(request.user_id)
+    path = _default_path(request, kp)
+
+    # 1. Get strategy-recommended params from profile + strategy engine
+    emit({"agent_name": "profile_agent", "stage": "langgraph_node", "status": "running", "progress": 10, "hint": "正在分析画像和策略...", "node": "profile_agent", "duration_ms": 0})
+    update = adaptive_service.post_learning_update(
+        user_id=request.user_id, knowledge_point=kp,
+        conversation_context=request.message, conversation_id=request.conversation_id,
+    )
+    strategy_types = update.get("recommended_types", [])
+    resource_params = update.get("resource_params", {})
+    diff_map = {"easy": "easy", "medium": "medium", "hard": "hard"}
+    difficulty = diff_map.get(resource_params.get("difficulty", request.difficulty), request.difficulty)
+    emit({"agent_name": "profile_agent", "stage": "langgraph_node", "status": "done", "progress": 25, "hint": f"策略分析完成，推荐类型: {strategy_types}", "node": "profile_agent", "duration_ms": 0})
+
+    # 2. Merge request resource_types with strategy recommendations
+    merged_types = list(request.resource_types) if request.resource_types else []
+    from app.core.enums import ResourceType
+    existing = {t.value if hasattr(t, "value") else str(t) for t in merged_types}
+    for rt in strategy_types:
+        if rt not in existing:
+            try:
+                merged_types.append(ResourceType(rt))
+            except ValueError:
+                pass
+    if not merged_types:
+        merged_types = [ResourceType.DOCUMENT, ResourceType.QUIZ]
+
+    # 3. Generate resources
+    emit({"agent_name": "resource_agent", "stage": "langgraph_node", "status": "running", "progress": 30, "hint": f"ResourceAgent: 正在生成 {len(merged_types)} 类资源...", "node": "resource_agent", "duration_ms": 0})
+    try:
+        result = resource_service.generate_resources(
+            ResourceGenerateRequest(
+                user_id=request.user_id,
+                subject=request.subject or "通用",
+                knowledge_point=kp,
+                resource_types=merged_types,
+                difficulty=difficulty,
+                base_agent_id=request.base_agent_id,
+            ),
+            emit_progress=emit,
+        )
+        resources = result.resources
+        emit({"agent_name": "resource_agent", "stage": "langgraph_node", "status": "done", "progress": 100, "hint": f"ResourceAgent: 已生成 {len(resources)} 份资源", "node": "resource_agent", "duration_ms": 0})
+    except Exception as exc:
+        logger.exception("ResourceAgent failed")
+        resources = []
+        emit({"agent_name": "resource_agent", "stage": "langgraph_node", "status": "failed", "progress": 0, "hint": f"ResourceAgent: {exc}", "node": "resource_agent", "duration_ms": 0})
+
+    answer_msg = f"已围绕「{kp}」生成 {len(resources)} 份学习资源。" if resources else f"「{kp}」资源生成失败，请稍后重试。"
+    session = conversation_service.append_message(
+        request.user_id, role="assistant", content=answer_msg,
+        conversation_id=session.conversation_id, intent="resource_generation",
+        profile_id=profile.profile_id,
+        metadata={
+            "intent_result": {
+                "intent": "resource_generation", "confidence": 1.0, "method": "learning_service",
+                "result": {
+                    "resources": [r.model_dump(mode="json") for r in resources],
+                    "status": "success" if resources else "failed",
+                },
+            },
+        },
+    )
+
+    workflow = workflow_service.get_workflow(wf_id)
+    if workflow is None:
+        workflow = _build_fallback_workflow(wf_id, {"completed_steps": ["resource_agent"]}, request.user_id)
+
+    return LearningStartResponse(
+        task_id=uuid4(), workflow_id=wf_id, conversation_id=session.conversation_id,
+        status="success" if resources else "degraded",
+        stream_url=f"/api/v1/agent-workflows/{wf_id}/stream",
         profile=profile, path=path, resources=resources, workflow=workflow,
         recommendations=[], messages=session.messages,
     )
@@ -432,6 +580,12 @@ def _run_general_chat(request: LearningStartRequest, wf_id: UUID, emit) -> Learn
         request.user_id, role="assistant", content=full_text,
         conversation_id=session.conversation_id, intent="general_chat_result",
         profile_id=profile.profile_id,
+        metadata={
+            "intent_result": {
+                "intent": "general_chat", "confidence": 1.0, "method": "learning_service",
+                "result": {"reply": full_text},
+            },
+        },
     )
 
     workflow = workflow_service.get_workflow(wf_id)
@@ -705,6 +859,14 @@ def _start_learning_impl(
         metadata={
             "workflow_id": str(generated.workflow_id),
             "resource_ids": [str(item.resource_id) for item in generated.resources],
+            "intent_result": {
+                "intent": "learning_path", "confidence": 1.0, "method": "pipeline",
+                "result": {
+                    "title": path.title,
+                    "nodes": [{"knowledge_point": n.knowledge_point, "status": n.status, "order": n.order} for n in path.nodes],
+                    "resources": [r.model_dump(mode="json") for r in generated.resources],
+                },
+            },
         },
     )
 

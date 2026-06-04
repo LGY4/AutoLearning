@@ -43,7 +43,7 @@ function injectModelOverrides(body: unknown): unknown {
   return { ...overrides, ...(body as Record<string, unknown>) };
 }
 
-const REQUEST_TIMEOUT_MS = 60_000;
+const REQUEST_TIMEOUT_MS = 180_000;
 
 const FRIENDLY_ERRORS: Record<string, string> = {
   LLM_TIMEOUT: "AI 服务响应超时，请稍后重试",
@@ -56,6 +56,9 @@ const FRIENDLY_ERRORS: Record<string, string> = {
   PROFILE_NOT_FOUND: "学习档案未找到，请先完成入学诊断",
   GRADING_FAILED: "评分服务暂时不可用，请重试",
   INTERNAL_ERROR: "服务器内部错误，请稍后重试",
+  "Username already exists": "该用户名已存在，请换一个试试",
+  "Invalid username or password": "用户名或密码错误",
+  "User is inactive": "账号已被禁用",
 };
 
 export function getFriendlyError(detail: string, errorCode?: string): string {
@@ -82,8 +85,15 @@ function timeoutSignal(existing?: AbortSignal): { signal: AbortSignal; cleanup: 
 
 async function handleResponse<T>(response: Response, path: string): Promise<T> {
   if (!response.ok) {
-    if (response.status === 401 || response.status === 403) {
+    const isAuthEndpoint = path.includes("/auth/login") || path.includes("/auth/register");
+    if ((response.status === 401 || response.status === 403) && !isAuthEndpoint) {
       clearAccessToken();
+      if (!window.location.pathname.startsWith("/login")) {
+        window.location.href = "/";
+        // Return a never-resolving promise — page is reloading,
+        // callers should not continue processing.
+        return new Promise<T>(() => {});
+      }
     }
     let detail = `${response.status} ${path}`;
     let errorCode: string | undefined;
@@ -95,6 +105,8 @@ async function handleResponse<T>(response: Response, path: string): Promise<T> {
         } else {
           detail = String(body.detail);
         }
+      } else if (body?.message) {
+        detail = String(body.message);
       }
       errorCode = body?.error_code;
     } catch { /* ignore */ }
@@ -185,7 +197,7 @@ export async function apiPostStream(
   onEvent: (event: { type: string; data: unknown }) => void,
   signal?: AbortSignal
 ) {
-  const STREAM_READ_TIMEOUT_MS = 120_000; // 2 minutes per-read timeout
+  const STREAM_READ_TIMEOUT_MS = 300_000; // 5 minutes per-read timeout
 
   const response = await fetch(`${API_PREFIX}${path}`, {
     method: "POST",
@@ -237,16 +249,30 @@ export async function apiPostStream(
     }
   };
 
-  while (true) {
-    const readPromise = reader.read();
-    const timeoutPromise = new Promise<never>((_, reject) => {
-      const id = setTimeout(() => reject(new Error("SSE read timeout")), STREAM_READ_TIMEOUT_MS);
-      signal?.addEventListener("abort", () => { clearTimeout(id); reject(new Error("aborted")); }, { once: true });
-    });
-    const { value, done } = await Promise.race([readPromise, timeoutPromise]);
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    flush();
+  // Single abort listener for the entire stream — avoids per-chunk listener leak
+  let timerId: ReturnType<typeof setTimeout> | undefined;
+  const abortHandler = () => { clearTimeout(timerId); reader.cancel(); };
+  signal?.addEventListener("abort", abortHandler, { once: true });
+
+  try {
+    while (true) {
+      const readPromise = reader.read();
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timerId = setTimeout(() => reject(new Error("SSE read timeout")), STREAM_READ_TIMEOUT_MS);
+      });
+      try {
+        const { value, done } = await Promise.race([readPromise, timeoutPromise]);
+        clearTimeout(timerId);
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        flush();
+      } catch (e) {
+        clearTimeout(timerId);
+        throw e;
+      }
+    }
+  } finally {
+    signal?.removeEventListener("abort", abortHandler);
   }
 
   buffer += decoder.decode();
@@ -257,17 +283,23 @@ export async function apiTTS(text: string, voice?: string): Promise<Blob> {
   const token = getAccessToken();
   const headers: Record<string, string> = { "Content-Type": "application/json" };
   if (token) headers["Authorization"] = `Bearer ${token}`;
-  const res = await fetch(`${API_PREFIX}/tts/synthesize`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ text, voice }),
-  });
-  if (!res.ok) {
-    const detail = res.headers.get("X-Error") || "";
-    if (res.status === 503 && detail.includes("Key")) {
-      throw new Error("TTS_NOT_CONFIGURED");
+  const { signal, cleanup } = timeoutSignal();
+  try {
+    const res = await fetch(`${API_PREFIX}/tts/synthesize`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ text, voice }),
+      signal,
+    });
+    if (!res.ok) {
+      const detail = res.headers.get("X-Error") || "";
+      if (res.status === 503 && detail.includes("Key")) {
+        throw new Error("TTS_NOT_CONFIGURED");
+      }
+      throw new Error(detail || `TTS 请求失败: ${res.status}`);
     }
-    throw new Error(detail || `TTS 请求失败: ${res.status}`);
+    return res.blob();
+  } finally {
+    cleanup();
   }
-  return res.blob();
 }

@@ -122,10 +122,7 @@ def _generate_tts(text: str, voice: str, output_path: str) -> float:
         finally:
             os.unlink(text_file)
     else:
-        # Fallback: asyncio (main thread only)
-        import threading
-        if threading.current_thread() is not threading.main_thread():
-            raise RuntimeError("edge-tts CLI not found and cannot use asyncio in background thread")
+        # Fallback: use edge-tts Python module via asyncio
         asyncio.run(_generate_tts_async(text, voice, output_path))
 
     # Get duration via ffprobe
@@ -152,9 +149,14 @@ def _generate_scene_image(prompt: str, style: str, output_path: str) -> str:
     # Try existing image_gen_service
     try:
         from app.services.image_gen_service import generate_image
+        import shutil
         result = generate_image(styled_prompt, style="educational", size="1280x720")
         if result.get("image_path") and Path(result["image_path"]).exists():
-            return result["image_path"]
+            src = Path(result["image_path"])
+            dst = Path(output_path)
+            if src.resolve() != dst.resolve():
+                shutil.copy2(str(src), str(dst))
+            return output_path
     except Exception:
         pass
 
@@ -229,11 +231,16 @@ def _compose_frame(narration: str, scene_image_path: str, output_path: str) -> N
     """Compose a video frame: background image + narration text overlay."""
     from PIL import Image, ImageDraw, ImageFont
 
-    # Load scene image or create solid bg
+    # Load scene image or generate a text card fallback
     try:
         bg = Image.open(scene_image_path).resize((FRAME_W, FRAME_H))
     except Exception:
-        bg = Image.new("RGB", (FRAME_W, FRAME_H), color=(15, 15, 25))
+        fallback_path = scene_image_path + ".fallback.png"
+        _generate_text_card(narration[:60], fallback_path)
+        try:
+            bg = Image.open(fallback_path).resize((FRAME_W, FRAME_H))
+        except Exception:
+            bg = Image.new("RGB", (FRAME_W, FRAME_H), color=(15, 15, 25))
 
     # Darken bottom area for text
     overlay = Image.new("RGBA", (FRAME_W, FRAME_H), (0, 0, 0, 0))
@@ -440,7 +447,7 @@ def generate_video(
         "video_id": task_id,
         "video_path": final_path,
         "video_url": f"/api/v1/video/file/{task_id}",
-        "thumbnail_url": f"/api/v1/video/thumbnail/{task_id}" if Path(thumbnail_path).exists() else None,
+        "thumbnail_url": f"/api/v1/video/thumbnail/{task_id}" if thumbnail_path and Path(thumbnail_path).exists() else None,
         "title": title,
         "duration_seconds": round(total_duration, 1),
         "scenes": scene_results,

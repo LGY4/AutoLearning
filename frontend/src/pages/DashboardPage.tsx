@@ -4,9 +4,11 @@ import { BookOpen, Clock, Compass, PenTool, Target, TrendingUp, AlertTriangle, A
 import { useAppContext } from "../context/AppContext";
 import { apiGet } from "../api/client";
 import { ProfilePanel } from "../components/profile/ProfilePanel";
+import { RadarChart, DIM_KEYS, DIM_LABELS, dimToValue } from "../components/common/RadarChart";
 import { AssessmentPanel } from "../components/assessment/AssessmentPanel";
 import { RecommendationPanel } from "../components/recommendation/RecommendationPanel";
 import { Spinner } from "../components/common/Spinner";
+import type { Recommendation } from "../types/baseline";
 
 interface LearningSummary {
   total_count: number;
@@ -42,11 +44,18 @@ interface WorkflowDetail {
 }
 
 export function DashboardPage() {
-  const { state } = useAppContext();
+  const { state, dispatch } = useAppContext();
   const { profile, recommendations, resources } = state;
   const navigate = useNavigate();
   const [summary, setSummary] = useState<LearningSummary | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const refreshRecommendations = useCallback(async () => {
+    try {
+      const recs = await apiGet<Recommendation[]>("/recommendations/");
+      dispatch({ type: "SET_RECOMMENDATIONS", payload: recs });
+    } catch { /* silent */ }
+  }, [dispatch]);
 
   // Workflow viewer
   const [workflowId, setWorkflowId] = useState("");
@@ -91,6 +100,19 @@ export function DashboardPage() {
   const weakTopics = profile.knowledge_profile.weak_topics;
   const knownTopics = profile.knowledge_profile.known_topics ?? [];
   const masteryEntries = Object.entries(profile.knowledge_profile.mastery_level ?? {});
+  const topicDims = profile.knowledge_profile.topic_dimensions;
+
+  // Compute average dimensions for radar
+  const avgDimensions: Record<string, number> = { mastery: 0.33, application: 0.33, memory: 0.33, understanding: 0.33 };
+  if (topicDims && Object.keys(topicDims).length > 0) {
+    const entries = Object.values(topicDims);
+    for (const key of DIM_KEYS) {
+      const sum = entries.reduce((acc, d) => acc + dimToValue(d[key]), 0);
+      avgDimensions[key] = sum / entries.length;
+    }
+  }
+
+  const DIM_LEVEL_LABELS: Record<string, string> = { high: "高", mid: "中", low: "低" };
 
   const formatDuration = (seconds: number): string => {
     if (seconds < 60) return `${seconds}秒`;
@@ -107,7 +129,7 @@ export function DashboardPage() {
       {!hasProfile ? (
         <div className="dashboard-empty">
           <p>完成初始诊断后，学习数据将在此展示。</p>
-          <button type="button" className="dashboard-btn" onClick={() => navigate("/")}>去开始学习</button>
+          <button type="button" className="dashboard-btn" onClick={() => navigate("/")}>去完成诊断</button>
         </div>
       ) : (
         <>
@@ -144,6 +166,39 @@ export function DashboardPage() {
           </div>
 
           <div className="dashboard-grid">
+            {/* Active goal & target course */}
+            {(profile.learning_goal?.current_goal || profile.learning_goal?.target_course) && (
+              <div className="dashboard-card">
+                <h3><Target size={18} /> 学习目标</h3>
+                <div className="dashboard-pref-grid">
+                  {profile.learning_goal?.current_goal && (
+                    <div className="dashboard-pref-item">
+                      <span className="dashboard-pref-label">当前目标</span>
+                      <span className="dashboard-pref-value">{profile.learning_goal.current_goal}</span>
+                    </div>
+                  )}
+                  {profile.learning_goal?.target_course && (
+                    <div className="dashboard-pref-item">
+                      <span className="dashboard-pref-label">目标课程</span>
+                      <span className="dashboard-pref-value">{profile.learning_goal.target_course}</span>
+                    </div>
+                  )}
+                  {profile.learning_goal?.target_level && (
+                    <div className="dashboard-pref-item">
+                      <span className="dashboard-pref-label">目标水平</span>
+                      <span className="dashboard-pref-value">{profile.learning_goal.target_level}</span>
+                    </div>
+                  )}
+                  {profile.learning_goal?.deadline && (
+                    <div className="dashboard-pref-item">
+                      <span className="dashboard-pref-label">截止日期</span>
+                      <span className="dashboard-pref-value">{profile.learning_goal.deadline}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
             {/* Mastery bars */}
             {masteryEntries.length > 0 && (
               <div className="dashboard-card">
@@ -171,6 +226,84 @@ export function DashboardPage() {
               <ProfilePanel profile={profile} />
             </div>
 
+            {/* Four-dimension radar chart */}
+            {topicDims && Object.keys(topicDims).length > 0 && (
+              <div className="dashboard-card dashboard-radar-card">
+                <h3>📊 四维度评估</h3>
+                <RadarChart dimensions={avgDimensions} size={200} />
+                <div className="dashboard-radar-dims">
+                  {DIM_KEYS.map((k) => (
+                    <div key={k} className="dashboard-radar-dim">
+                      <span className="dashboard-radar-dim-label">{DIM_LABELS[k]}</span>
+                      <span className="dashboard-radar-dim-value">{Math.round(avgDimensions[k] * 100)}%</span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {/* Learning preferences */}
+            <div className="dashboard-card">
+              <h3>📖 学习偏好</h3>
+              <div className="dashboard-pref-grid">
+                <div><span>学习风格</span><strong>{profile.learning_preference.learning_style}</strong></div>
+                <div><span>难度偏好</span><strong>{profile.learning_preference.difficulty_preference}</strong></div>
+                <div><span>资源偏好</span><strong>{Object.keys(profile.learning_preference.resource_preference ?? {}).join("、") || "—"}</strong></div>
+                <div><span>建议时长</span><strong>{profile.learning_behavior.average_study_minutes} 分钟/次</strong></div>
+                <div><span>活跃时段</span><strong>{profile.learning_behavior.active_period}</strong></div>
+              </div>
+            </div>
+
+            {/* Cognitive profile */}
+            {profile.cognitive_profile && (
+              <div className="dashboard-card">
+                <h3>🧠 认知特征</h3>
+                <div className="dashboard-cog-grid">
+                  <div><span>认知风格</span><strong>{profile.cognitive_profile.cognitive_style}</strong></div>
+                  <div><span>抽象理解</span><strong>{DIM_LEVEL_LABELS[profile.cognitive_profile.abstract_understanding] || profile.cognitive_profile.abstract_understanding}</strong></div>
+                  <div><span>动手能力</span><strong>{DIM_LEVEL_LABELS[profile.cognitive_profile.hands_on_ability] || profile.cognitive_profile.hands_on_ability}</strong></div>
+                  <div><span>阅读耐心</span><strong>{DIM_LEVEL_LABELS[profile.cognitive_profile.reading_patience] || profile.cognitive_profile.reading_patience}</strong></div>
+                </div>
+              </div>
+            )}
+
+            {/* Topic dimension table */}
+            {topicDims && Object.keys(topicDims).length > 0 && (
+              <div className="dashboard-card dashboard-card-full">
+                <h3>📋 知识点四维度</h3>
+                <div className="dashboard-dim-table">
+                  <div className="dashboard-dim-header">
+                    <span>知识点</span>
+                    <span>掌握</span>
+                    <span>应用</span>
+                    <span>记忆</span>
+                    <span>理解</span>
+                    <span>综合</span>
+                  </div>
+                  {Object.entries(topicDims).map(([topic, dim]) => {
+                    const scores = [dim.mastery, dim.application, dim.memory, dim.understanding];
+                    const avg = scores.filter((s) => s === "high").length * 3 + scores.filter((s) => s === "mid").length * 2 + scores.filter((s) => s === "low").length;
+                    const pct = Math.round((avg / 12) * 100);
+                    return (
+                      <div className="dashboard-dim-row" key={topic}>
+                        <span className="dashboard-dim-topic">{topic}</span>
+                        <span className={`dashboard-dim-cell ${dim.mastery}`}>{DIM_LEVEL_LABELS[dim.mastery] || dim.mastery}</span>
+                        <span className={`dashboard-dim-cell ${dim.application}`}>{DIM_LEVEL_LABELS[dim.application] || dim.application}</span>
+                        <span className={`dashboard-dim-cell ${dim.memory}`}>{DIM_LEVEL_LABELS[dim.memory] || dim.memory}</span>
+                        <span className={`dashboard-dim-cell ${dim.understanding}`}>{DIM_LEVEL_LABELS[dim.understanding] || dim.understanding}</span>
+                        <span className="dashboard-dim-cell">
+                          <div className="dashboard-dim-bar-container">
+                            <div className="dashboard-dim-bar" style={{ width: `${pct}%` }} />
+                            <span className="dashboard-dim-bar-label">{pct}%</span>
+                          </div>
+                        </span>
+                      </div>
+                    );
+                  })}
+                </div>
+              </div>
+            )}
+
             {/* Weak points */}
             {weakTopics.length > 0 && (
               <div className="dashboard-card">
@@ -195,7 +328,7 @@ export function DashboardPage() {
             {recommendations.length > 0 && (
               <div className="dashboard-card">
                 <h3>💡 学习推荐</h3>
-                <RecommendationPanel recommendations={recommendations} />
+                <RecommendationPanel recommendations={recommendations} onGenerated={refreshRecommendations} />
               </div>
             )}
 

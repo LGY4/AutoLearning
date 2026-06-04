@@ -24,3 +24,21 @@ class LearningRecordResponse(BaseModel):
     profile_update_triggered: bool
     updated_weak_points: List[str]
     next_review_at: Optional[str] = None
+
+
+class AssessmentSnapshotCreate(BaseModel):
+    mastery_score: float
+    confidence: float
+    stage: Optional[str] = "unknown"
+    weak_point_count: int = 0
+    weak_topics: List[str] = Field(default_factory=list)
+
+
+class AssessmentSnapshotResponse(BaseModel):
+    id: UUID
+    mastery_score: float
+    confidence: float
+    stage: str
+    weak_point_count: int
+    weak_topics: List[str]
+    created_at: str

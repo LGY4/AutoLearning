@@ -1,11 +1,15 @@
 import React, { useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { ResourceRenderer } from "../resource/ResourceRenderer";
+import rehypeSanitize from "rehype-sanitize";
+import { TrackedResourceRenderer } from "../resource/ResourceRenderer";
+import { PracticePanel, LearningMapPanel, DashboardPanel, ResourceBrowsePanel, VideoPanel, MediaPanel, CourseGoalPanel, AnalyticsPanel } from "./inline/InlinePanels";
+import { WelcomePanel } from "./inline/WelcomePanel";
 import { ProfilePanel } from "../profile/ProfilePanel";
 import { RecommendationPanel } from "../recommendation/RecommendationPanel";
 import { AgentTrace } from "../agent/AgentTrace";
 import { InlineQuiz } from "./InlineQuiz";
+import { PostQuizPanel } from "./PostQuizPanel";
 import type {
   AgentWorkflow,
   LearningPath,
@@ -54,6 +58,13 @@ export interface ChatMsg {
   agentCards?: Array<{ agent_name: string; hint: string }>;
   currentAgent?: string;
   pendingRecommendation?: PendingRecommendation;
+  postQuiz?: {
+    question: Record<string, unknown>;
+    quizSession: Record<string, unknown>;
+    knowledgePoint: string;
+    conversationId: string | null;
+    onComplete?: () => void;
+  };
   onQuizComplete?: (result: IntentResult) => void;
   onAction?: (action: string, payload?: string) => void;
 }
@@ -74,6 +85,15 @@ const INTENT_LABELS: Record<string, string> = {
   resource_generation: "资源生成",
   assessment: "学习评估",
   general_chat: "闲聊",
+  practice: "练习刷题",
+  learning_map: "学习地图",
+  video_generation: "知识视频",
+  media_generation: "动画图片",
+  dashboard: "学习看板",
+  resource_browse: "资源浏览",
+  course_goal: "课程目标",
+  analytics: "学习分析",
+  welcome: "今日学习",
 };
 
 function IntentBadge({ intent, confidence }: { intent: string; confidence: number }) {
@@ -127,12 +147,13 @@ function IntentResultView({ intentResult, onQuizComplete, onAction }: { intentRe
     const markdown = (result.markdown as string) || answer;
     const refs = (result.rag_references as Array<{ title?: string; source?: string }>) || [];
     const nextStep = result.next_step as string | undefined;
-    const rec = result.resource_recommendation as { knowledge_point?: string; recommended_types?: string[] } | undefined;
+    const rec = result.resource_recommendation as { knowledge_point?: string; recommended_types?: string[]; reason?: string; decision?: string } | undefined;
+    const showRec = rec && rec.recommended_types && rec.recommended_types.length > 0 && rec.decision !== "silent";
     return (
       <>
         <IntentBadge intent={intent} confidence={confidence} />
         <div className="chat-content chat-tutor-answer">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{markdown}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>{markdown}</ReactMarkdown>
         </div>
         {refs.length > 0 && (
           <div className="chat-refs">
@@ -142,19 +163,30 @@ function IntentResultView({ intentResult, onQuizComplete, onAction }: { intentRe
           </div>
         )}
         {nextStep && <div className="chat-next-step">建议：{nextStep}</div>}
-        {rec && rec.recommended_types && rec.recommended_types.length > 0 && (
-          <div className="chat-resource-recommend">
-            <span className="chat-resource-recommend-label">推荐学习资源：</span>
-            {rec.recommended_types.map((t, i) => (
+        {showRec && (
+          <div className={`chat-resource-recommend ${rec.decision === "ask" ? "ask-mode" : ""}`}>
+            {rec.reason && <div className="chat-resource-recommend-reason">{rec.reason}</div>}
+            <div className="chat-resource-recommend-types">
+              {rec.recommended_types!.map((t, i) => (
+                <button
+                  key={i}
+                  type="button"
+                  className="chat-resource-recommend-tag"
+                  onClick={() => onAction?.("generate_resource", `${rec.knowledge_point || ""}|${t}`)}
+                >
+                  {t}
+                </button>
+              ))}
+            </div>
+            {rec.decision === "auto" && (
               <button
-                key={i}
                 type="button"
-                className="chat-resource-recommend-tag"
-                onClick={() => onAction?.("generate_resource", `${rec.knowledge_point || ""}|${t}`)}
+                className="chat-resource-recommend-gen"
+                onClick={() => onAction?.("generate_resource", `${rec.knowledge_point || ""}|${rec.recommended_types!.join(",")}`)}
               >
-                {t}
+                一键生成
               </button>
-            ))}
+            )}
           </div>
         )}
         {result.knowledge_point && (
@@ -178,7 +210,7 @@ function IntentResultView({ intentResult, onQuizComplete, onAction }: { intentRe
         <IntentBadge intent={intent} confidence={confidence} />
         <div className="chat-content"><strong>{title}</strong></div>
         <div className="chat-content chat-exercise-content">
-          <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown>
+          <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>{content}</ReactMarkdown>
         </div>
       </>
     );
@@ -236,6 +268,7 @@ function IntentResultView({ intentResult, onQuizComplete, onAction }: { intentRe
 
   if (intent === "resource_generation") {
     const resList = (result.resources as LearningResource[]) || [];
+    const status = result.status as string | undefined;
     return (
       <>
         <IntentBadge intent={intent} confidence={confidence} />
@@ -252,16 +285,96 @@ function IntentResultView({ intentResult, onQuizComplete, onAction }: { intentRe
                   <span className="chat-resource-expand">展开</span>
                 </summary>
                 <div className="chat-resource-body">
-                  <ResourceRenderer resource={r} />
+                  <TrackedResourceRenderer resource={r} />
                 </div>
               </details>
             ))}
           </div>
         ) : (
-          <div className="chat-content">资源生成中...</div>
+          <div className="chat-content">
+            {status === "failed" || status === "degraded"
+              ? "资源生成失败，请稍后重试或直接输入知识点名称重新请求。"
+              : "资源生成中，请稍候..."}
+          </div>
         )}
       </>
     );
+  }
+
+  if (intent === "practice") {
+    return (
+      <>
+        <IntentBadge intent={intent} confidence={confidence} />
+        <PracticePanel result={result} />
+      </>
+    );
+  }
+
+  if (intent === "learning_map") {
+    return (
+      <>
+        <IntentBadge intent={intent} confidence={confidence} />
+        <LearningMapPanel result={result} />
+      </>
+    );
+  }
+
+  if (intent === "dashboard") {
+    return (
+      <>
+        <IntentBadge intent={intent} confidence={confidence} />
+        <DashboardPanel result={result} />
+      </>
+    );
+  }
+
+  if (intent === "resource_browse") {
+    return (
+      <>
+        <IntentBadge intent={intent} confidence={confidence} />
+        <ResourceBrowsePanel result={result} />
+      </>
+    );
+  }
+
+  if (intent === "video_generation") {
+    return (
+      <>
+        <IntentBadge intent={intent} confidence={confidence} />
+        <VideoPanel result={result} />
+      </>
+    );
+  }
+
+  if (intent === "media_generation") {
+    return (
+      <>
+        <IntentBadge intent={intent} confidence={confidence} />
+        <MediaPanel result={result} />
+      </>
+    );
+  }
+
+  if (intent === "course_goal") {
+    return (
+      <>
+        <IntentBadge intent={intent} confidence={confidence} />
+        <CourseGoalPanel result={result} />
+      </>
+    );
+  }
+
+  if (intent === "analytics") {
+    return (
+      <>
+        <IntentBadge intent={intent} confidence={confidence} />
+        <AnalyticsPanel result={result} />
+      </>
+    );
+  }
+
+  if (intent === "welcome") {
+    return <WelcomePanel result={result} />;
   }
 
   if (intent === "general_chat") {
@@ -340,20 +453,29 @@ function ResourceRecommendCard({ rec, knowledgePoint, onConfirm, onCancel }: {
 }
 
 export const ChatMessage = React.memo(function ChatMessage({ message }: Props) {
-  const { role, content, streaming, images, profile, path, resources, recommendations, intentResult, trace, agentCards, currentAgent, pendingRecommendation, onQuizComplete, onAction } = message;
+  const { role, content, streaming, images, profile, path, resources, recommendations, intentResult, trace, agentCards, currentAgent, pendingRecommendation, postQuiz, onQuizComplete, onAction } = message;
 
   return (
     <div className={`chat-message ${role}`}>
       <div className="chat-bubble">
         {images && images.length > 0 && (
           <div className="chat-message-images">
-            {images.map((img, i) => (
+            {images.filter(img => /^https?:\/\//.test(img) || img.startsWith('data:image/')).map((img, i) => (
               <img key={i} src={img} alt={`upload-${i}`} className="chat-message-image" />
             ))}
           </div>
         )}
 
-        {pendingRecommendation ? (
+        {postQuiz ? (
+          <PostQuizPanel
+            question={postQuiz.question as any}
+            quizSession={postQuiz.quizSession as any}
+            knowledgePoint={postQuiz.knowledgePoint}
+            conversationId={postQuiz.conversationId}
+            onComplete={() => postQuiz.onComplete?.()}
+            onGenerateResource={(kp, rt) => onAction?.("generate_resource", `${kp}|${rt}`)}
+          />
+        ) : pendingRecommendation ? (
           <ResourceRecommendCard
             rec={pendingRecommendation.response}
             knowledgePoint={pendingRecommendation.knowledgePoint}
@@ -365,7 +487,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message }: Props) {
         ) : (
           <div className="chat-content">
             {streaming && !content && !agentCards?.length && !currentAgent ? "正在思考..." : null}
-            {content ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{content}</ReactMarkdown> : null}
+            {content ? <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>{content}</ReactMarkdown> : null}
           </div>
         )}
 
@@ -415,7 +537,7 @@ export const ChatMessage = React.memo(function ChatMessage({ message }: Props) {
                   <span className="chat-resource-expand">展开</span>
                 </summary>
                 <div className="chat-resource-body">
-                  <ResourceRenderer resource={r} />
+                  <TrackedResourceRenderer resource={r} />
                 </div>
               </details>
             ))}

@@ -1,47 +1,34 @@
 import { useState, useEffect, useCallback } from "react";
+import { apiGet, apiPost } from "../../api/client";
+import { useAppContext } from "../../context/AppContext";
 
 interface AssessmentSnapshot {
-  timestamp: string;
+  id: string;
   mastery_score: number;
   confidence: number;
   stage: string;
   weak_point_count: number;
   weak_topics: string[];
+  created_at: string;
 }
 
-const STORAGE_KEY = "autolearning_assess_history";
-const MAX_SNAPSHOTS = 20;
-
-function loadHistory(): AssessmentSnapshot[] {
-  try {
-    const raw = localStorage.getItem(STORAGE_KEY);
-    return raw ? JSON.parse(raw) : [];
-  } catch {
-    return [];
-  }
-}
-
-function saveHistory(snapshots: AssessmentSnapshot[]) {
-  localStorage.setItem(STORAGE_KEY, JSON.stringify(snapshots.slice(0, MAX_SNAPSHOTS)));
-}
-
-export function addAssessmentSnapshot(data: {
+export async function addAssessmentSnapshot(data: {
   mastery_score: number;
   confidence: number;
   stage?: string;
   weak_points?: Array<{ topic: string }>;
 }) {
-  const history = loadHistory();
-  const snapshot: AssessmentSnapshot = {
-    timestamp: new Date().toISOString(),
-    mastery_score: data.mastery_score,
-    confidence: data.confidence,
-    stage: data.stage || "unknown",
-    weak_point_count: data.weak_points?.length || 0,
-    weak_topics: (data.weak_points || []).map((w) => w.topic),
-  };
-  history.unshift(snapshot);
-  saveHistory(history);
+  try {
+    await apiPost("/learning-records/assessment-snapshot", {
+      mastery_score: data.mastery_score,
+      confidence: data.confidence,
+      stage: data.stage || "unknown",
+      weak_point_count: data.weak_points?.length || 0,
+      weak_topics: (data.weak_points || []).map((w) => w.topic),
+    });
+  } catch {
+    // Silently fail — assessment still works, just no history persisted
+  }
 }
 
 function formatDate(iso: string) {
@@ -57,17 +44,25 @@ function DeltaBadge({ current, previous }: { current: number; previous: number }
 }
 
 export function AssessmentHistory() {
+  const { state } = useAppContext();
   const [history, setHistory] = useState<AssessmentSnapshot[]>([]);
+  const [loading, setLoading] = useState(true);
 
-  useEffect(() => {
-    setHistory(loadHistory());
-  }, []);
+  const fetchHistory = useCallback(async () => {
+    if (!state.user) { setLoading(false); return; }
+    try {
+      const res = await apiGet<AssessmentSnapshot[]>("/learning-records/assessment-history");
+      setHistory(res);
+    } catch {
+      // Fall back to empty
+    } finally {
+      setLoading(false);
+    }
+  }, [state.user]);
 
-  const clearHistory = useCallback(() => {
-    localStorage.removeItem(STORAGE_KEY);
-    setHistory([]);
-  }, []);
+  useEffect(() => { fetchHistory(); }, [fetchHistory]);
 
+  if (loading) return <div className="assess-history-empty">加载历史记录...</div>;
   if (history.length === 0) {
     return <div className="assess-history-empty">暂无评估历史记录</div>;
   }
@@ -84,8 +79,8 @@ export function AssessmentHistory() {
       {history.map((snap, i) => {
         const prev = history[i + 1];
         return (
-          <div key={snap.timestamp} className="assess-history-row">
-            <span className="assess-history-date">{formatDate(snap.timestamp)}</span>
+          <div key={snap.id} className="assess-history-row">
+            <span className="assess-history-date">{formatDate(snap.created_at)}</span>
             <span className="assess-history-score">{Math.round(snap.mastery_score * 100)}%</span>
             <span className="assess-history-prev">{Math.round(snap.confidence * 100)}%</span>
             {prev ? (
@@ -96,11 +91,6 @@ export function AssessmentHistory() {
           </div>
         );
       })}
-      <div className="assess-history-actions">
-        <button className="assess-history-btn danger" onClick={clearHistory} type="button">
-          清除历史
-        </button>
-      </div>
     </div>
   );
 }

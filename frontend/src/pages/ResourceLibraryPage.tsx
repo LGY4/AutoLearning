@@ -167,10 +167,12 @@ export function ResourceLibraryPage() {
   }, [userId]);
 
   useEffect(() => {
+    setFilterType("");
+    setKeyword("");
     if (tab === "resources") loadResources();
     else if (tab === "questions") loadQuestions();
     else if (tab === "answers") loadAnswers();
-  }, [tab, loadResources, loadQuestions, loadAnswers]);
+  }, [tab]);
 
   const handleDeleteResource = async (id: string) => {
     if (!userId) return;
@@ -272,26 +274,7 @@ export function ResourceLibraryPage() {
         </div>
       )}
 
-      {/* Task status */}
-      {tab === "resources" && (
-        <div className="res-lib-upload" style={{ marginBottom: 12 }}>
-          <input
-            className="res-lib-upload-title"
-            placeholder="输入任务 ID 查看状态"
-            value={taskId}
-            onChange={(e) => setTaskId(e.target.value)}
-            onKeyDown={(e) => e.key === "Enter" && taskId.trim() && startPolling(taskId.trim())}
-          />
-          <button
-            className="res-lib-upload-submit"
-            onClick={() => taskId.trim() && startPolling(taskId.trim())}
-            disabled={!taskId.trim() || polling}
-            type="button"
-          >
-            {polling ? "查询中..." : "查询状态"}
-          </button>
-        </div>
-      )}
+      {/* Task status - hidden for regular users, shown only when there's an active task */}
       {taskStatus && (
         <div className="res-lib-card" style={{ marginBottom: 12 }}>
           <div className="res-lib-card-top">
@@ -318,9 +301,6 @@ export function ResourceLibraryPage() {
           ) : (
             resources.resources.map((r) => (
               <div key={r.resource_id} className="res-lib-card res-lib-card-clickable" onClick={() => handleResourceClick(r.resource_id)} role="button" tabIndex={0} onKeyDown={(e) => e.key === "Enter" && handleResourceClick(r.resource_id)}>
-                {r.resource_type === "video" && (
-                  <img className="res-lib-bili-pic" src={`/api/v1/video/thumbnail/${r.resource_id}`} alt="" loading="lazy" onError={(e) => { (e.target as HTMLImageElement).style.display = "none"; }} />
-                )}
                 <div className="res-lib-card-top">
                   <span className="res-lib-type">{TYPE_LABELS[r.resource_type] || r.resource_type}</span>
                   <span className="res-lib-kp">{r.knowledge_point}</span>
@@ -378,15 +358,17 @@ export function ResourceLibraryPage() {
               <div key={a.id} className="res-lib-card">
                 <div className="res-lib-card-top">
                   <span className={`res-lib-type ${a.is_correct ? "res-lib-correct" : "res-lib-wrong"}`}>
-                    {a.is_correct ? "正确" : "错误"}
+                    {a.is_correct ? "✓ 正确" : "✗ 错误"}
                   </span>
                   {a.score != null && <span className="res-lib-kp">{a.score}分</span>}
                 </div>
                 <div className="res-lib-card-title">
-                  {typeof a.user_answer === "string" ? a.user_answer : JSON.stringify(a.user_answer)}
+                  答案：{typeof a.user_answer === "string" ? a.user_answer : JSON.stringify(a.user_answer)}
                 </div>
                 <div className="res-lib-card-meta">
-                  {a.grading_method} · {a.time_spent_seconds ? `${a.time_spent_seconds}秒` : ""}
+                  题目 ID: {a.question_id?.slice(0, 8)}...
+                  {a.grading_method === "llm" ? " · AI 评分" : ""}
+                  {a.time_spent_seconds ? ` · 用时 ${a.time_spent_seconds}秒` : ""}
                   {a.submitted_at && ` · ${new Date(a.submitted_at).toLocaleString()}`}
                 </div>
               </div>
@@ -440,11 +422,7 @@ export function ResourceLibraryPage() {
               <button className="res-lib-detail-close" onClick={() => setSelectedResource(null)} type="button">✕</button>
             </div>
             <div className="res-lib-detail-body">
-              {selectedResource.resource_type === "video" && selectedResource.resource_id ? (
-                <video controls style={{ width: "100%", maxHeight: 400 }} src={`/api/v1/video/file/${selectedResource.resource_id}`} />
-              ) : (
-                <ResourceRenderer resource={selectedResource} />
-              )}
+              <ResourceRenderer resource={selectedResource} />
             </div>
           </div>
         </div>

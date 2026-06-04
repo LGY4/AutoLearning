@@ -44,6 +44,17 @@ def search(payload: KnowledgeSearchRequest) -> ApiResponse[dict]:
     )
 
 
+@router.get("/search", response_model=ApiResponse[dict])
+def search_get(q: str, subject: Optional[str] = None, top_k: int = 5) -> ApiResponse[dict]:
+    return success(
+        {
+            "query": q,
+            "subject": subject,
+            "results": rag_service.search_knowledge(q, subject, top_k),
+        }
+    )
+
+
 @router.get("/status", response_model=ApiResponse[dict])
 def status() -> ApiResponse[dict]:
     return success(rag_service.knowledge_status())
@@ -87,12 +98,49 @@ def get_topology() -> ApiResponse[list]:
     return success(graph_service.topological_sort())
 
 
+@router.get("/graph/with-path", response_model=ApiResponse[dict])
+def get_graph_with_path(current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
+    """Return the knowledge graph enriched with the user's current learning path status."""
+    graph = graph_service.get_full_graph()
+
+    from app.repositories.vertical_loop_repository import repository
+    path = repository.get_path(current_user.id)
+
+    # Build a map from knowledge_point name -> path node status
+    path_status_map: dict[str, dict] = {}
+    path_info = None
+    if path:
+        path_info = {
+            "path_id": str(path.path_id),
+            "title": path.title,
+            "goal": path.goal,
+            "status": path.status,
+            "completed_count": sum(1 for n in path.nodes if n.status.value == "completed"),
+            "total_count": len(path.nodes),
+        }
+        for node in path.nodes:
+            path_status_map[node.knowledge_point] = {
+                "node_id": str(node.node_id),
+                "order": node.order,
+                "status": node.status.value,
+                "estimated_minutes": node.estimated_minutes,
+            }
+
+    # Enrich graph nodes with path_status
+    nodes = graph.get("nodes", [])
+    for n in nodes:
+        n["path_status"] = path_status_map.get(n["name"])
+
+    return success({"graph": graph, "path": path_info})
+
+
 # ── Graph Builder endpoints (with DB persistence) ────────────────────────
 
 
 @router.post("/graphs/build", response_model=ApiResponse[dict])
 def build_graph(payload: GraphBuildRequest, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
     """Build a knowledge graph from provided sources. Returns draft + validation."""
+    _require_admin(current_user)
     graph, validation = graph_builder_agent.build_and_validate(payload)
 
     graph_id = f"{graph.metadata.course_id}_v{graph.metadata.version}"
@@ -114,6 +162,7 @@ async def upload_and_build(
     current_user: UserDTO = Depends(get_current_user),
 ) -> ApiResponse[dict]:
     """Upload PDF/Markdown/text files and build a graph from their content."""
+    _require_admin(current_user)
     import asyncio
 
     documents: List[str] = []
@@ -206,6 +255,7 @@ def get_graph_by_id(graph_id: str) -> ApiResponse[dict]:
 @router.delete("/graphs/{graph_id}", response_model=ApiResponse[dict])
 def delete_graph(graph_id: str, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
     """Delete a draft graph."""
+    _require_admin(current_user)
     deleted = graph_repository.delete_graph(graph_id)
     return success({"deleted": deleted, "graph_id": graph_id})
 

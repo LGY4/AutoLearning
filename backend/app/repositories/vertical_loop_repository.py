@@ -135,7 +135,9 @@ from app.db.models import (
     AgentEventLog,
     AgentTaskModel,
     AgentWorkflowModel,
+    AnswerRecordModel,
     AppUser,
+    AssessmentSnapshotModel,
     LearningPathModel,
     LearningPathNodeModel,
     LearningRecordModel,
@@ -230,8 +232,31 @@ class InMemoryVerticalLoopRepository:
     def get_path(self, user_id: UUID) -> Optional[LearningPath]:
         return store.paths.get(user_id)
 
+    def get_path_by_id(self, path_id: UUID, user_id: UUID) -> Optional[LearningPath]:
+        paths = store.path_history.get(user_id, [])
+        for p in paths:
+            if p.path_id == path_id:
+                return p
+        return None
+
+    def list_paths(self, user_id: UUID, page: int = 1, page_size: int = 20) -> tuple:
+        paths = store.path_history.get(user_id, [])
+        total = len(paths)
+        start = (page - 1) * page_size
+        return paths[start:start + page_size], total
+
+    def delete_path(self, path_id: UUID, user_id: UUID) -> bool:
+        paths = store.path_history.get(user_id, [])
+        store.path_history[user_id] = [p for p in paths if p.path_id != path_id]
+        if store.paths.get(user_id) and store.paths[user_id].path_id == path_id:
+            store.paths.pop(user_id, None)
+        return True
+
     def complete_path_node(self, user_id: UUID, node_id: UUID) -> Optional[LearningPath]:
         return store.complete_path_node(user_id, node_id)
+
+    def start_learning_node(self, user_id: UUID, knowledge_point: str) -> Optional[LearningPath]:
+        return store.start_learning_node(user_id, knowledge_point)
 
     def create_workflow(self, user_id: UUID, input_payload: Optional[dict] = None, emit_progress=None) -> AgentWorkflow:
         return store.create_workflow(user_id, input_payload)
@@ -251,6 +276,12 @@ class InMemoryVerticalLoopRepository:
     def get_recommendations(self, user_id: UUID) -> List[Recommendation]:
         return store.recommendations.get(user_id, [])
 
+    def get_pending_suggestions(self, user_id: UUID) -> List[dict]:
+        return []  # In-memory store doesn't persist suggestions
+
+    def consume_suggested_generation(self, user_id: UUID, rec: dict) -> None:
+        pass  # No-op for in-memory store
+
     def save_learning_record(self, record: LearningRecordCreate) -> Optional[UUID]:
         record_id = uuid4()
         store.learning_records.append({
@@ -264,11 +295,14 @@ class InMemoryVerticalLoopRepository:
             "duration_seconds": record.duration_seconds,
             "wrong_points": record.wrong_points,
             "feedback": record.feedback,
+            "created_at": now_iso(),
         })
         return record_id
 
     def list_learning_records(self, user_id: UUID) -> List[dict]:
-        return [r for r in store.learning_records if r["user_id"] == user_id]
+        records = [r for r in store.learning_records if r["user_id"] == user_id]
+        records.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+        return records
 
     def list_questions(self, knowledge_point: Optional[str] = None, question_type: Optional[str] = None, subject: Optional[str] = None, difficulty: Optional[str] = None) -> List[dict]:
         results = store.questions
@@ -348,6 +382,7 @@ class InMemoryVerticalLoopRepository:
 
     def emit_event(self, user_id: UUID, event_type: str, event_payload: dict, confidence: float, source_type: str = "agent", source_id: Optional[UUID] = None) -> UUID:
         event_id = uuid4()
+        from app.services.runtime_support import now_iso
         store.profile_events.append({
             "id": event_id,
             "user_id": user_id,
@@ -358,11 +393,17 @@ class InMemoryVerticalLoopRepository:
             "source_id": source_id,
             "status": "pending",
             "error_message": None,
+            "created_at": now_iso(),
         })
         return event_id
 
     def list_pending_events(self, user_id: UUID, limit: int = 20) -> List[dict]:
         return [e for e in store.profile_events if e["user_id"] == user_id and e["status"] == "pending"][:limit]
+
+    def list_events_by_type(self, user_id: UUID, event_type: str, limit: int = 50) -> List[dict]:
+        events = [e for e in store.profile_events if e["user_id"] == user_id and e["event_type"] == event_type]
+        events.sort(key=lambda e: e.get("created_at", ""), reverse=True)
+        return events[:limit]
 
     def update_event_status(self, event_id: UUID, status: str, error_message: Optional[str] = None) -> None:
         for e in store.profile_events:
@@ -370,6 +411,45 @@ class InMemoryVerticalLoopRepository:
                 e["status"] = status
                 e["error_message"] = error_message
                 break
+
+    def get_latest_profile_version(self, user_id: UUID) -> Optional[int]:
+        profile = store.profiles.get(user_id)
+        return profile.version if profile else None
+
+    def save_profile_and_update_event(
+        self, profile: StudentProfile, event_id: UUID, event_status: str = "applied", error_message: Optional[str] = None
+    ) -> StudentProfile:
+        result = self.save_profile(profile)
+        self.update_event_status(event_id, event_status, error_message)
+        return result
+
+    def save_assessment_snapshot(self, user_id: UUID, data: dict) -> dict:
+        record = {
+            "id": str(uuid4()),
+            "user_id": str(user_id),
+            "mastery_score": data["mastery_score"],
+            "confidence": data["confidence"],
+            "stage": data.get("stage", "unknown"),
+            "weak_point_count": data.get("weak_point_count", 0),
+            "weak_topics": data.get("weak_topics", []),
+            "created_at": now_iso(),
+        }
+        store.assessment_snapshots.insert(0, record)
+        # Keep max 50 per user
+        uid = str(user_id)
+        count = 0
+        trimmed = []
+        for r in store.assessment_snapshots:
+            if r["user_id"] == uid:
+                count += 1
+                if count > 50:
+                    continue
+            trimmed.append(r)
+        store.assessment_snapshots = trimmed
+        return record
+
+    def list_assessment_history(self, user_id: UUID, limit: int = 20) -> List[dict]:
+        return [r for r in store.assessment_snapshots if r["user_id"] == str(user_id)][:limit]
 
 
 class PostgresVerticalLoopRepository:
@@ -412,6 +492,16 @@ class PostgresVerticalLoopRepository:
             ).all()
             return [StudentProfile.model_validate(row.profile_json) for row in rows]
 
+    def get_latest_profile_version(self, user_id: UUID) -> Optional[int]:
+        with SessionLocal() as db:
+            row = db.scalar(
+                select(StudentProfileModel.profile_version)
+                .where(StudentProfileModel.user_id == user_id)
+                .order_by(desc(StudentProfileModel.profile_version))
+                .limit(1)
+            )
+            return row
+
     def save_profile(self, profile: StudentProfile) -> StudentProfile:
         with _safe_session() as db:
             latest = db.scalar(
@@ -421,13 +511,6 @@ class PostgresVerticalLoopRepository:
                 .with_for_update()
                 .limit(1)
             )
-
-            # Validate version for optimistic locking
-            if latest and profile.version != latest.profile_version:
-                from app.repositories.mock_store import ProfileVersionConflictError
-                raise ProfileVersionConflictError(
-                    f"Version conflict: expected {latest.profile_version}, got {profile.version}"
-                )
 
             next_version = (latest.profile_version + 1) if latest else 1
             new_id = uuid4()
@@ -546,6 +629,43 @@ class PostgresVerticalLoopRepository:
                 return None
             return LearningPath.model_validate(row.strategy["path_payload"])
 
+    def get_path_by_id(self, path_id: UUID, user_id: UUID) -> Optional[LearningPath]:
+        with SessionLocal() as db:
+            row = db.scalar(
+                select(LearningPathModel)
+                .where(LearningPathModel.id == path_id, LearningPathModel.user_id == user_id)
+            )
+            if not row or not row.strategy or "path_payload" not in row.strategy:
+                return None
+            return LearningPath.model_validate(row.strategy["path_payload"])
+
+    def list_paths(self, user_id: UUID, page: int = 1, page_size: int = 20) -> tuple:
+        with SessionLocal() as db:
+            q = db.query(LearningPathModel).filter(LearningPathModel.user_id == user_id)
+            total = q.count()
+            rows = (
+                q.order_by(desc(LearningPathModel.created_at))
+                .offset((page - 1) * page_size)
+                .limit(page_size)
+                .all()
+            )
+            paths = []
+            for row in rows:
+                if row.strategy and "path_payload" in row.strategy:
+                    paths.append(LearningPath.model_validate(row.strategy["path_payload"]))
+            return paths, total
+
+    def delete_path(self, path_id: UUID, user_id: UUID) -> bool:
+        with _safe_session() as db:
+            row = db.scalar(
+                select(LearningPathModel)
+                .where(LearningPathModel.id == path_id, LearningPathModel.user_id == user_id)
+            )
+            if not row:
+                return False
+            db.delete(row)
+            return True
+
     def complete_path_node(self, user_id: UUID, node_id: UUID) -> Optional[LearningPath]:
         from app.core.enums import PathNodeStatus
         with _safe_session() as db:
@@ -561,6 +681,19 @@ class PostgresVerticalLoopRepository:
                 return None
 
             path = LearningPath.model_validate(row.strategy["path_payload"])
+            # Find the target node and validate status
+            target_node = None
+            for node in path.nodes:
+                if node.node_id == node_id:
+                    target_node = node
+                    break
+            if target_node is None:
+                return None  # node_id not found in path
+            if target_node.status == PathNodeStatus.LOCKED:
+                return None  # cannot complete a locked node
+            if target_node.status == PathNodeStatus.COMPLETED:
+                return path  # already completed, no-op
+
             updated_nodes = []
             found = False
             for node in path.nodes:
@@ -572,12 +705,40 @@ class PostgresVerticalLoopRepository:
                     found = False
                 else:
                     updated_nodes.append(node)
-            if not found:
+
+            new_path = path.model_copy(update={"nodes": updated_nodes})
+            row.strategy = {"path_payload": new_path.model_dump(mode="json"), **new_path.strategy}
+        return new_path
+
+    def start_learning_node(self, user_id: UUID, knowledge_point: str) -> Optional[LearningPath]:
+        """Set a node to LEARNING status if it is currently AVAILABLE."""
+        from app.core.enums import PathNodeStatus
+        with _safe_session() as db:
+            row = db.scalar(
+                select(LearningPathModel)
+                .where(LearningPathModel.user_id == user_id)
+                .order_by(desc(LearningPathModel.updated_at))
+                .limit(1)
+                .with_for_update()
+            )
+            if not row or not row.strategy or "path_payload" not in row.strategy:
+                return None
+
+            path = LearningPath.model_validate(row.strategy["path_payload"])
+            updated_nodes = []
+            changed = False
+            for node in path.nodes:
+                if node.knowledge_point == knowledge_point and node.status == PathNodeStatus.AVAILABLE:
+                    updated_nodes.append(node.model_copy(update={"status": PathNodeStatus.LEARNING}))
+                    changed = True
+                else:
+                    updated_nodes.append(node)
+
+            if not changed:
                 return path
 
             new_path = path.model_copy(update={"nodes": updated_nodes})
             row.strategy = {"path_payload": new_path.model_dump(mode="json"), **new_path.strategy}
-            db.commit()
         return new_path
 
     def create_workflow(self, user_id: UUID, input_payload: Optional[dict] = None, emit_progress=None) -> AgentWorkflow:
@@ -689,6 +850,8 @@ class PostgresVerticalLoopRepository:
             return LearningResource.model_validate(payload["resource_payload"])
 
     def create_recommendations(self, user_id: UUID) -> List[Recommendation]:
+        from app.services.strategy_engine import get_resource_params
+
         with _safe_session() as db:
             profile_row = db.scalar(
                 select(StudentProfileModel)
@@ -697,6 +860,8 @@ class PostgresVerticalLoopRepository:
                 .limit(1)
             )
             profile = StudentProfile.model_validate(profile_row.profile_json) if profile_row else None
+
+            # Load existing resources
             rows = db.scalars(select(LearningResourceModel).where(LearningResourceModel.user_id == user_id)).all()
             resources: List[LearningResource] = []
             for row in rows:
@@ -704,24 +869,72 @@ class PostgresVerticalLoopRepository:
                 if "resource_payload" in payload:
                     resources.append(LearningResource.model_validate(payload["resource_payload"]))
 
+            # Get completed resource IDs from learning records
+            from app.db.models import LearningRecordModel
+            record_rows = db.scalars(
+                select(LearningRecordModel.resource_id)
+                .where(LearningRecordModel.user_id == user_id)
+                .where(LearningRecordModel.resource_id.isnot(None))
+            ).all()
+            completed_ids = set(record_rows)
+
+            # Score existing resources
             recommendations: List[Recommendation] = []
+            existing_types_by_kp: dict[str, set[str]] = {}  # kp -> set of resource types
             for resource in resources:
-                score, evidence = resource_score(resource, profile)
+                score, evidence = resource_score(resource, profile, completed_ids)
+                kp = resource.knowledge_point
+                existing_types_by_kp.setdefault(kp, set()).add(resource.resource_type.value)
                 recommendations.append(
                     Recommendation(
                         recommendation_id=uuid4(),
                         user_id=user_id,
                         resource_id=resource.resource_id,
                         title=resource.title,
-                        score=score,
+                        score=min(1.0, score / 100.0),
                         recommend_reason={
-                            "main_reason": "根据薄弱点、资源偏好和资源质量排序",
-                            "weak_point": resource.knowledge_point,
+                            "main_reason": "根据画像、薄弱点和资源质量综合排序",
+                            "weak_point": kp,
                             "matched_profile": profile.learning_preference.learning_style if profile else "unknown",
                             "evidence": evidence,
+                            "recommendation_type": "existing_resource",
                         },
                     )
                 )
+
+            # Bridge strategy_engine: generate "should generate" recommendations
+            # for weak topics that are missing resource types
+            if profile:
+                weak_topics = profile.knowledge_profile.weak_topics or []
+                style = profile.learning_preference.learning_style
+                for kp in weak_topics[:5]:  # limit to top 5 weak topics
+                    dim = profile.knowledge_profile.topic_dimensions.get(kp)
+                    if not dim:
+                        continue
+                    params = get_resource_params(dim, style)
+                    recommended_types = params.get("resource_types", [])
+                    existing_for_kp = existing_types_by_kp.get(kp, set())
+                    missing_types = [t for t in recommended_types if t not in existing_for_kp]
+                    for rtype in missing_types[:2]:  # max 2 missing types per KP
+                        virtual_score = 0.5 + (0.15 if kp in weak_topics else 0)  # base + weak boost
+                        recommendations.append(
+                            Recommendation(
+                                recommendation_id=uuid4(),
+                                user_id=user_id,
+                                resource_id=uuid4(),  # virtual — not yet generated
+                                title=f"生成{rtype}：{kp}",
+                                score=virtual_score,
+                                recommend_reason={
+                                    "main_reason": "根据画像推荐生成该类型资源",
+                                    "weak_point": kp,
+                                    "matched_profile": style,
+                                    "resource_type": rtype,
+                                    "dimension_summary": dim.model_dump(),
+                                    "recommendation_type": "suggested_generation",
+                                },
+                            )
+                        )
+
             recommendations.sort(key=lambda item: item.score, reverse=True)
             for item in recommendations:
                 db.add(
@@ -755,6 +968,59 @@ class PostgresVerticalLoopRepository:
                 )
                 for row in rows
             ]
+
+    def get_pending_suggestions(self, user_id: UUID) -> List[dict]:
+        """Get pending suggested_generation recommendations."""
+        with SessionLocal() as db:
+            rows = db.scalars(
+                select(RecommendationRecord)
+                .where(
+                    RecommendationRecord.user_id == user_id,
+                    RecommendationRecord.completed == False,  # noqa: E712
+                )
+                .order_by(desc(RecommendationRecord.score))
+                .limit(10)
+            ).all()
+            return [
+                {
+                    "recommendation_id": row.id,
+                    "knowledge_point": (row.recommend_reason or {}).get("knowledge_point", ""),
+                    "resource_type": (row.recommend_reason or {}).get("resource_type", "document"),
+                    "title": (row.recommend_reason or {}).get("title", ""),
+                    "recommendation_type": (row.recommend_reason or {}).get("recommendation_type", ""),
+                }
+                for row in rows
+                if (row.recommend_reason or {}).get("recommendation_type") == "suggested_generation"
+            ]
+
+    def consume_suggested_generation(self, user_id: UUID, rec: dict) -> None:
+        """Consume a suggested_generation: create the resource and mark recommendation completed."""
+        from app.core.enums import ResourceType
+
+        kp = rec.get("knowledge_point", "")
+        rtype = rec.get("resource_type", "document")
+        if not kp:
+            return
+
+        try:
+            resource_type = ResourceType(rtype)
+        except ValueError:
+            resource_type = ResourceType.DOCUMENT
+
+        # Create the resource
+        self.create_resource(
+            user_id=user_id,
+            knowledge_point=kp,
+            resource_type=resource_type,
+        )
+
+        # Mark recommendation as completed
+        rec_id = rec.get("recommendation_id")
+        if rec_id:
+            with _safe_session() as db:
+                row = db.get(RecommendationRecord, rec_id)
+                if row:
+                    row.completed = True
 
     def save_learning_record(self, record: LearningRecordCreate) -> Optional[UUID]:
         with _safe_session() as db:
@@ -842,7 +1108,7 @@ class PostgresVerticalLoopRepository:
             }
 
     def save_question(self, data: dict) -> dict:
-        with SessionLocal() as db:
+        with _safe_session() as db:
             q = QuestionModel(
                 knowledge_point=data.get("knowledge_point", ""),
                 question_type=data["question_type"],
@@ -855,21 +1121,20 @@ class PostgresVerticalLoopRepository:
                 tags=data.get("tags", []),
             )
             db.add(q)
-            db.commit()
+            db.flush()
             db.refresh(q)
             return {"id": str(q.id), "status": "created"}
 
     def delete_question(self, question_id: UUID) -> bool:
-        with SessionLocal() as db:
+        with _safe_session() as db:
             row = db.get(QuestionModel, question_id)
             if not row:
                 return False
             row.status = "deleted"
-            db.commit()
             return True
 
     def save_answer_record(self, data: dict) -> dict:
-        with SessionLocal() as db:
+        with _safe_session() as db:
             record = AnswerRecordModel(
                 user_id=data["user_id"],
                 question_id=data["question_id"],
@@ -881,7 +1146,7 @@ class PostgresVerticalLoopRepository:
                 time_spent_seconds=data.get("time_spent_seconds"),
             )
             db.add(record)
-            db.commit()
+            db.flush()
             db.refresh(record)
             return {"id": str(record.id), "is_correct": record.is_correct, "score": float(record.score) if record.score else None}
 
@@ -928,12 +1193,11 @@ class PostgresVerticalLoopRepository:
             return results
 
     def delete_resource(self, user_id: UUID, resource_id: UUID) -> bool:
-        with SessionLocal() as db:
+        with _safe_session() as db:
             row = db.get(LearningResourceModel, resource_id)
             if not row or row.user_id != user_id:
                 return False
             db.delete(row)
-            db.commit()
             return True
 
     def emit_event(self, user_id: UUID, event_type: str, event_payload: dict, confidence: float, source_type: str = "agent", source_id: Optional[UUID] = None) -> UUID:
@@ -971,6 +1235,27 @@ class PostgresVerticalLoopRepository:
                 for row in rows
             ]
 
+    def list_events_by_type(self, user_id: UUID, event_type: str, limit: int = 50) -> List[dict]:
+        with SessionLocal() as db:
+            rows = db.scalars(
+                select(ProfileEventModel)
+                .where(ProfileEventModel.user_id == user_id, ProfileEventModel.event_type == event_type)
+                .order_by(desc(ProfileEventModel.created_at))
+                .limit(limit)
+            ).all()
+            return [
+                {
+                    "id": row.id,
+                    "event_type": row.event_type,
+                    "event_payload": row.event_payload,
+                    "confidence": float(row.confidence),
+                    "source_type": row.source_type,
+                    "source_id": row.source_id,
+                    "created_at": row.created_at,
+                }
+                for row in rows
+            ]
+
     def update_event_status(self, event_id: UUID, status: str, error_message: Optional[str] = None) -> None:
         with _safe_session() as db:
             row = db.get(ProfileEventModel, event_id)
@@ -979,6 +1264,100 @@ class PostgresVerticalLoopRepository:
                 row.error_message = error_message
                 if status == "applied":
                     row.applied_at = datetime.now(timezone.utc)
+
+    def save_profile_and_update_event(
+        self, profile: StudentProfile, event_id: UUID, event_status: str = "applied", error_message: Optional[str] = None
+    ) -> StudentProfile:
+        """Atomically save profile and update event status in a single transaction."""
+        with _safe_session() as db:
+            # Save profile
+            latest = db.scalar(
+                select(StudentProfileModel)
+                .where(StudentProfileModel.user_id == profile.user_id)
+                .order_by(desc(StudentProfileModel.profile_version))
+                .with_for_update()
+                .limit(1)
+            )
+            next_version = (latest.profile_version + 1) if latest else 1
+            new_id = uuid4()
+            row = StudentProfileModel(
+                id=new_id,
+                user_id=profile.user_id,
+                profile_json=profile.model_dump(mode="json"),
+                profile_version=next_version,
+                completeness_score=profile.completeness_score,
+                confidence_score=profile.confidence_score,
+                updated_by=profile.dynamic_update.update_source,
+            )
+            db.add(row)
+            if latest:
+                db.add(
+                    StudentProfileHistory(
+                        profile_id=latest.id,
+                        feature_name="student_profile",
+                        old_value=latest.profile_json,
+                        new_value=profile.model_dump(mode="json"),
+                        change_reason=profile.dynamic_update.update_reason,
+                        source_type="agent",
+                        confidence_score=profile.confidence_score,
+                    )
+                )
+            db.flush()
+
+            # Update event status in the same transaction
+            event_row = db.get(ProfileEventModel, event_id)
+            if event_row:
+                event_row.status = event_status
+                event_row.error_message = error_message
+                if event_status == "applied":
+                    event_row.applied_at = datetime.now(timezone.utc)
+
+        return profile.model_copy(update={"profile_id": new_id, "version": next_version})
+
+    def save_assessment_snapshot(self, user_id: UUID, data: dict) -> dict:
+        with _safe_session() as db:
+            record = AssessmentSnapshotModel(
+                user_id=user_id,
+                mastery_score=data["mastery_score"],
+                confidence=data["confidence"],
+                stage=data.get("stage", "unknown"),
+                weak_point_count=data.get("weak_point_count", 0),
+                weak_topics=data.get("weak_topics", []),
+            )
+            db.add(record)
+            db.flush()
+            db.refresh(record)
+            return {
+                "id": str(record.id),
+                "user_id": str(user_id),
+                "mastery_score": float(record.mastery_score),
+                "confidence": float(record.confidence),
+                "stage": record.stage,
+                "weak_point_count": record.weak_point_count,
+                "weak_topics": record.weak_topics or [],
+                "created_at": record.created_at.isoformat() if record.created_at else None,
+            }
+
+    def list_assessment_history(self, user_id: UUID, limit: int = 20) -> List[dict]:
+        with SessionLocal() as db:
+            rows = db.scalars(
+                select(AssessmentSnapshotModel)
+                .where(AssessmentSnapshotModel.user_id == user_id)
+                .order_by(desc(AssessmentSnapshotModel.created_at))
+                .limit(limit)
+            ).all()
+            return [
+                {
+                    "id": str(r.id),
+                    "mastery_score": float(r.mastery_score),
+                    "confidence": float(r.confidence),
+                    "stage": r.stage,
+                    "weak_point_count": r.weak_point_count,
+                    "weak_topics": r.weak_topics or [],
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in rows
+            ]
 
 
 class AutoSwitchRepository:
@@ -1004,6 +1383,9 @@ class AutoSwitchRepository:
     def get_profile_versions(self, user_id: UUID) -> List[StudentProfile]:
         return self._run("get_profile_versions", user_id)
 
+    def get_latest_profile_version(self, user_id: UUID) -> Optional[int]:
+        return self._run("get_latest_profile_version", user_id)
+
     def save_profile(self, profile: StudentProfile) -> StudentProfile:
         return self._run("save_profile", profile)
 
@@ -1025,6 +1407,9 @@ class AutoSwitchRepository:
     def complete_path_node(self, user_id: UUID, node_id: UUID) -> Optional[LearningPath]:
         return self._run("complete_path_node", user_id, node_id)
 
+    def start_learning_node(self, user_id: UUID, knowledge_point: str) -> Optional[LearningPath]:
+        return self._run("start_learning_node", user_id, knowledge_point)
+
     def create_workflow(self, user_id: UUID, input_payload: Optional[dict] = None, emit_progress=None) -> AgentWorkflow:
         return self._run("create_workflow", user_id, input_payload, emit_progress=emit_progress)
 
@@ -1042,6 +1427,12 @@ class AutoSwitchRepository:
 
     def get_recommendations(self, user_id: UUID) -> List[Recommendation]:
         return self._run("get_recommendations", user_id)
+
+    def get_pending_suggestions(self, user_id: UUID) -> List[dict]:
+        return self._run("get_pending_suggestions", user_id)
+
+    def consume_suggested_generation(self, user_id: UUID, rec: dict) -> None:
+        return self._run("consume_suggested_generation", user_id, rec)
 
     def save_learning_record(self, record: LearningRecordCreate) -> Optional[UUID]:
         return self._run("save_learning_record", record)
@@ -1079,8 +1470,22 @@ class AutoSwitchRepository:
     def list_pending_events(self, user_id: UUID, limit: int = 20) -> List[dict]:
         return self._run("list_pending_events", user_id, limit)
 
+    def list_events_by_type(self, user_id: UUID, event_type: str, limit: int = 50) -> List[dict]:
+        return self._run("list_events_by_type", user_id, event_type, limit)
+
     def update_event_status(self, event_id: UUID, status: str, error_message: Optional[str] = None) -> None:
         return self._run("update_event_status", event_id, status, error_message)
+
+    def save_profile_and_update_event(
+        self, profile: StudentProfile, event_id: UUID, event_status: str = "applied", error_message: Optional[str] = None
+    ) -> StudentProfile:
+        return self._run("save_profile_and_update_event", profile, event_id, event_status, error_message)
+
+    def save_assessment_snapshot(self, user_id: UUID, data: dict) -> dict:
+        return self._run("save_assessment_snapshot", user_id, data)
+
+    def list_assessment_history(self, user_id: UUID, limit: int = 20) -> List[dict]:
+        return self._run("list_assessment_history", user_id, limit)
 
 
 repository: VerticalLoopRepository = AutoSwitchRepository()

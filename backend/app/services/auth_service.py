@@ -60,6 +60,40 @@ def _sign(payload: dict) -> str:
     return base64.urlsafe_b64encode(body + b"." + signature).decode("utf-8")
 
 
+_redis_client = None
+_redis_lock = __import__("threading").Lock()
+
+
+def _get_redis():
+    global _redis_client
+    if _redis_client is None:
+        with _redis_lock:
+            if _redis_client is None:
+                import redis as redis_lib
+                settings = get_settings()
+                _redis_client = redis_lib.from_url(settings.redis_url, socket_timeout=2)
+    return _redis_client
+
+
+def _is_token_revoked(token: str) -> bool:
+    """Check if token has been revoked via Redis blacklist."""
+    try:
+        r = _get_redis()
+        return r.exists(f"token_blacklist:{token}") > 0
+    except Exception:
+        return False
+
+
+def revoke_token(token: str) -> None:
+    """Add token to blacklist so it can no longer be used."""
+    try:
+        r = _get_redis()
+        r.setex(f"token_blacklist:{token}", _TOKEN_TTL_SECONDS, "1")
+    except Exception:
+        import logging
+        logging.getLogger(__name__).warning("Token revocation failed (Redis unavailable); token remains valid")
+
+
 def _unsign(token: str) -> dict:
     try:
         raw = base64.urlsafe_b64decode(token.encode("utf-8"))
@@ -73,6 +107,8 @@ def _unsign(token: str) -> dict:
     exp = payload.get("exp")
     if exp and int(time.time()) > exp:
         raise HTTPException(status_code=401, detail="Token expired")
+    if _is_token_revoked(token):
+        raise HTTPException(status_code=401, detail="Token has been revoked")
     return payload
 
 

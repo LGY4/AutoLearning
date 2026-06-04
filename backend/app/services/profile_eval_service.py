@@ -19,22 +19,43 @@ def evaluate_knowledge_point(
     quiz_accuracy: Optional[float] = None,
     total_questions: int = 0,
     conversation_context: str = "",
+    dimension_results: Optional[dict] = None,
 ) -> KnowledgeDimension:
     """Evaluate four dimensions for a knowledge point after learning.
 
-    - Has quiz data → rule-based evaluation
-    - No quiz data → return existing dimension (no LLM inference from conversation)
-    """
-    from app.services.strategy_engine import merge_dimensions
+    - Has dimension_results → per-dimension evaluation (preferred)
+    - Has quiz_accuracy → overall accuracy fallback
+    - No quiz data → return existing dimension
 
+    Returns raw new_dim WITHOUT merging — caller is responsible for merge.
+    """
     existing_dim = profile.knowledge_profile.topic_dimensions.get(knowledge_point)
 
+    if dimension_results and any(v.get("total", 0) > 0 for v in dimension_results.values()):
+        # Per-dimension evaluation (each dimension tested independently)
+        def _dim_level(correct: int, total: int) -> str:
+            if total == 0:
+                return "low"
+            acc = correct / total
+            if acc >= 0.8:
+                return "high"
+            elif acc >= 0.5:
+                return "mid"
+            return "low"
+
+        return KnowledgeDimension(
+            mastery=_dim_level(dimension_results.get("mastery", {}).get("correct", 0), dimension_results.get("mastery", {}).get("total", 0)),
+            application=_dim_level(dimension_results.get("application", {}).get("correct", 0), dimension_results.get("application", {}).get("total", 0)),
+            memory=_dim_level(dimension_results.get("memory", {}).get("correct", 0), dimension_results.get("memory", {}).get("total", 0)),
+            understanding=_dim_level(dimension_results.get("understanding", {}).get("correct", 0), dimension_results.get("understanding", {}).get("total", 0)),
+        )
+
     if quiz_accuracy is not None and total_questions >= 1:
-        # Confidence scales with number of questions answered
-        confidence = min(0.6 + total_questions * 0.05, 0.95)
+        # Require >= 3 questions for "high" classification to avoid cold-start inflation
+        can_be_high = total_questions >= 3
 
         # Mastery: knows the concept
-        if quiz_accuracy >= 0.8:
+        if quiz_accuracy >= 0.8 and can_be_high:
             mastery = "high"
         elif quiz_accuracy >= 0.5:
             mastery = "mid"
@@ -42,10 +63,10 @@ def evaluate_knowledge_point(
             mastery = "low"
 
         # Application: can use in practice
-        if quiz_accuracy >= 0.7:
+        if quiz_accuracy >= 0.8 and can_be_high:
+            application = "high"
+        elif quiz_accuracy >= 0.5:
             application = "mid"
-        elif quiz_accuracy >= 0.4:
-            application = "low"
         else:
             application = "low"
 
@@ -58,20 +79,19 @@ def evaluate_knowledge_point(
             memory = "low"
 
         # Understanding: grasps the why
-        if quiz_accuracy >= 0.7:
-            understanding = "mid"
-        elif quiz_accuracy >= 0.4:
+        if quiz_accuracy >= 0.8 and can_be_high:
+            understanding = "high"
+        elif quiz_accuracy >= 0.5:
             understanding = "mid"
         else:
             understanding = "low"
 
-        new_dim = KnowledgeDimension(
+        return KnowledgeDimension(
             mastery=mastery,
             application=application,
             memory=memory,
             understanding=understanding,
         )
-        return merge_dimensions(existing_dim, new_dim, confidence=confidence)
 
     # No quiz data → return existing dimension unchanged
     return existing_dim or KnowledgeDimension()
@@ -94,6 +114,7 @@ def update_profile_dimensions(
     """
     from app.services.strategy_engine import compute_known_topics, compute_mastery_level, compute_overall_level, compute_weak_topics
 
+    saved = False
     for attempt in range(max_retries):
         profile = profile_service.get_profile(user_id, conversation_id=conversation_id)
         if profile is None:
@@ -139,12 +160,17 @@ def update_profile_dimensions(
                     repository.save_profile(profile)
             else:
                 repository.save_profile(profile)
+            saved = True
             break
         except Exception as exc:
             if "Version conflict" in str(exc) and attempt < max_retries - 1:
                 logger.warning("Profile version conflict, retrying (%d/%d)", attempt + 1, max_retries)
                 continue
             raise
+
+    if not saved:
+        logger.error("Failed to save profile after %d retries for user %s, kp %s", max_retries, user_id, knowledge_point)
+        return None
 
     if emit:
         emit({

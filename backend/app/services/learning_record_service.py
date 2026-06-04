@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import List, Optional
 
 from datetime import datetime, timedelta, timezone
 from uuid import UUID, uuid4
 
 from app.repositories.vertical_loop_repository import repository
-from app.schemas.learning_record import LearningRecordCreate, LearningRecordResponse
+from app.schemas.learning_record import AssessmentSnapshotCreate, AssessmentSnapshotResponse, LearningRecordCreate, LearningRecordResponse
 from app.services.profile_event_service import ProfileEventType, emit_event
 from app.services.runtime_support import now_iso
 
@@ -33,12 +33,12 @@ def _compute_next_review(user_id, knowledge_point: Optional[str], conversation_i
     return next_time.isoformat(timespec="seconds")
 
 
-def create_learning_record(request: LearningRecordCreate, conversation_id: Optional[UUID] = None) -> LearningRecordResponse:
+def create_learning_record(request: LearningRecordCreate, conversation_id: Optional[UUID] = None, skip_event: bool = False) -> LearningRecordResponse:
     persisted_id = repository.save_learning_record(request)
     from app.services import profile_service
     profile = profile_service.get_profile(request.user_id, conversation_id=conversation_id)
     updated = list(request.wrong_points)
-    if profile and request.wrong_points:
+    if profile and request.wrong_points and not skip_event:
         merged = list(dict.fromkeys(profile.knowledge_profile.weak_topics + request.wrong_points))
         emit_event(request.user_id, ProfileEventType.WRONG_POINTS, {"wrong_points": request.wrong_points}, confidence=0.5)
         updated = merged
@@ -93,3 +93,65 @@ def get_learning_summary(user_id) -> dict:
         "weak_points": weak_points,
         "recent_records": recent,
     }
+
+
+def track_resource_consumption(
+    user_id: UUID,
+    resource_id: str,
+    knowledge_point: str,
+    resource_type: str = "",
+    duration_seconds: int = 0,
+    completion_pct: float = 0.0,
+) -> dict:
+    """Track resource consumption and emit profile event."""
+    record = LearningRecordCreate(
+        user_id=user_id,
+        resource_id=UUID(resource_id) if resource_id else None,
+        knowledge_point=knowledge_point,
+        resource_type=resource_type,
+        duration_seconds=duration_seconds,
+        score=int(completion_pct * 100) if completion_pct > 0 else None,
+    )
+    repository.save_learning_record(record)
+    emit_event(
+        user_id,
+        ProfileEventType.RESOURCE_CONSUMPTION,
+        {
+            "resource_id": resource_id,
+            "knowledge_point": knowledge_point,
+            "resource_type": resource_type,
+            "duration_seconds": duration_seconds,
+            "completion_pct": completion_pct,
+        },
+        confidence=0.6,
+    )
+    return {"tracked": True, "duration_seconds": duration_seconds, "completion_pct": completion_pct}
+
+
+def save_assessment_snapshot(user_id: UUID, data: AssessmentSnapshotCreate) -> AssessmentSnapshotResponse:
+    record = repository.save_assessment_snapshot(user_id, data.model_dump())
+    return AssessmentSnapshotResponse(
+        id=record["id"],
+        mastery_score=record["mastery_score"],
+        confidence=record["confidence"],
+        stage=record["stage"],
+        weak_point_count=record["weak_point_count"],
+        weak_topics=record["weak_topics"],
+        created_at=record["created_at"],
+    )
+
+
+def list_assessment_history(user_id: UUID, limit: int = 20) -> List[AssessmentSnapshotResponse]:
+    records = repository.list_assessment_history(user_id, limit)
+    return [
+        AssessmentSnapshotResponse(
+            id=r["id"],
+            mastery_score=r["mastery_score"],
+            confidence=r["confidence"],
+            stage=r["stage"],
+            weak_point_count=r["weak_point_count"],
+            weak_topics=r["weak_topics"],
+            created_at=r["created_at"],
+        )
+        for r in records
+    ]

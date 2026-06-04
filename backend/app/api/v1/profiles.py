@@ -19,6 +19,18 @@ router = APIRouter()
 @router.post("/extract", response_model=ApiResponse[StudentProfile])
 def extract_profile(payload: ProfileExtractRequest, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[StudentProfile]:
     payload.user_id = current_user.id
+    # If no conversation provided, load recent conversations as context
+    if not payload.conversation:
+        from app.services import conversation_service
+        sessions = conversation_service.list_conversations(current_user.id)
+        messages = []
+        for s in sessions[:3]:  # last 3 conversations
+            for msg in s.messages[-10:]:  # last 10 messages each
+                messages.append({"role": msg.role, "content": msg.content})
+        if messages:
+            payload.conversation = messages
+        else:
+            payload.conversation = [{"role": "user", "content": "初始化学生画像"}]
     return success(profile_service.extract_profile(payload))
 
 

@@ -1,7 +1,8 @@
-import { useCallback, useEffect, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { apiGet, apiPost, apiDelete, getFriendlyError } from "../api/client";
 import { useAppContext } from "../context/AppContext";
+import { useRecordLearning } from "../hooks/useRecordLearning";
 import { Spinner } from "../components/common/Spinner";
 
 interface Question {
@@ -33,8 +34,11 @@ const TYPE_LABELS: Record<string, string> = {
 };
 
 export function PracticePage() {
-  const { state } = useAppContext();
+  const { state, dispatch } = useAppContext();
   const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+  const recordLearning = useRecordLearning();
+  const resultsSavedRef = useRef(false);
   const [questions, setQuestions] = useState<Question[]>([]);
   const [loading, setLoading] = useState(true);
   const [currentIdx, setCurrentIdx] = useState(0);
@@ -188,6 +192,7 @@ export function PracticePage() {
     setUserAnswer("");
     setSelectedOption(null);
     setGradeResult(null);
+    resultsSavedRef.current = false;
   }, []);
 
   const handleAutoGenerate = useCallback(async () => {
@@ -354,6 +359,21 @@ export function PracticePage() {
   if (showSummary) {
     const correctCount = answers.filter((a) => a.correct).length;
     const avgScore = answers.length > 0 ? Math.round(answers.reduce((s, a) => s + a.score, 0) / answers.length) : 0;
+
+    // Save practice results to backend (once)
+    if (!resultsSavedRef.current && answers.length > 0) {
+      resultsSavedRef.current = true;
+      const kp = filterKP || questions[0]?.knowledge_point || "通用";
+      recordLearning({
+        knowledge_point: kp,
+        resource_type: "quiz",
+        score: correctCount / answers.length,
+        wrong_points: answers.filter((a) => !a.correct).map((a) => a.questionId),
+      }).then(() => {
+        // Refresh profile to update weak topics
+        apiGet<import("../types/baseline").StudentProfile>("/profiles/me").then((p) => dispatch({ type: "SET_PROFILE", payload: p })).catch(() => {});
+      }).catch(() => {});
+    }
     return (
       <div className="practice-page">
         <div className="practice-summary">
@@ -386,6 +406,7 @@ export function PracticePage() {
             ))}
           </div>
           <button type="button" className="practice-btn-restart" onClick={handleRestart}>重新练习</button>
+          <button type="button" className="practice-btn-next" onClick={() => navigate("/map")} style={{ marginLeft: 8 }}>查看学习路径</button>
         </div>
       </div>
     );

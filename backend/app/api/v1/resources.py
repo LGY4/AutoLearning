@@ -29,12 +29,17 @@ router = APIRouter()
 
 
 @router.post("/generate-async", response_model=ApiResponse[AsyncResourceGenerateResponse])
-def generate_resources_async(payload: ResourceGenerateRequest) -> ApiResponse[AsyncResourceGenerateResponse]:
+def generate_resources_async(
+    payload: ResourceGenerateRequest, current_user: UserDTO = Depends(get_current_user)
+) -> ApiResponse[AsyncResourceGenerateResponse]:
+    payload.user_id = current_user.id
     return success(resource_service.enqueue_resource_generation(payload))
 
 
 @router.get("/tasks/{celery_task_id}", response_model=ApiResponse[AsyncTaskStatusResponse])
-def get_resource_task_status(celery_task_id: str) -> ApiResponse[AsyncTaskStatusResponse]:
+def get_resource_task_status(
+    celery_task_id: str, current_user: UserDTO = Depends(get_current_user)
+) -> ApiResponse[AsyncTaskStatusResponse]:
     return success(resource_service.get_async_generation_status(celery_task_id))
 
 
@@ -161,7 +166,8 @@ def generate_questions(payload: QuestionGenerateRequest, current_user: UserDTO =
         overall_level=payload.overall_level,
     )
     saved = []
-    for q in result.get("questions", []):
+    errors = []
+    for i, q in enumerate(result.get("questions", [])):
         try:
             saved_q = resource_library.save_question({
                 "knowledge_point": payload.knowledge_point,
@@ -174,16 +180,16 @@ def generate_questions(payload: QuestionGenerateRequest, current_user: UserDTO =
                 "subject": payload.subject,
             })
             saved.append(saved_q)
-        except Exception:
-            pass
-    return success({"generated": len(result.get("questions", [])), "saved": len(saved), "questions": saved})
+        except Exception as exc:
+            errors.append(f"Q{i}: {exc}")
+    return success({"generated": len(result.get("questions", [])), "saved": len(saved), "questions": saved, "errors": errors})
 
 
 # ── Answer Grading ────────────────────────────────────────────────
 
 
 class GradeRequest(BaseModel):
-    question_id: UUID
+    question_id: str  # Accept both UUID and generated IDs like "q-0"
     question_type: str
     stem: str
     standard_answer: Union[str, dict, list]

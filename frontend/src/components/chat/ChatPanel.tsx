@@ -1,10 +1,18 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
+import { Search, X } from "lucide-react";
 import { useAppContext } from "../../context/AppContext";
 import { apiGet, apiPatch, apiPost, apiPostStream, getFriendlyError } from "../../api/client";
+
+/** Safely cast API response data to a typed shape */
+function asType<T>(data: unknown): T {
+  return data as T;
+}
 import { useRecordLearning } from "../../hooks/useRecordLearning";
 import { ChatMessage, type ChatMsg, type IntentResult, type TraceEntry } from "./ChatMessage";
+import { ErrorBoundary } from "../common/ErrorBoundary";
 import { ChatInput } from "./ChatInput";
+import { PostQuizPanel } from "./PostQuizPanel";
 import { PlusMenu } from "../plus-menu/PlusMenu";
 import { PipelineBar } from "../pipeline/PipelineBar";
 import type {
@@ -38,35 +46,110 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState(() => searchParams.get("topic") || "");
   const [mode, setMode] = useState<ChatMode>("intent");
+
+  // RAG knowledge search
+  const [ragPanelOpen, setRagPanelOpen] = useState(false);
+  const [ragQuery, setRagQuery] = useState("");
+  const [ragResults, setRagResults] = useState<Array<{ chunk_id: string; title: string; content: string; subject: string; score: number }> | null>(null);
+  const [ragLoading, setRagLoading] = useState(false);
+  const [ragContext, setRagContext] = useState<Array<{ chunk_id: string; title: string; content: string; subject: string }>>([]);
+  const ragContextRef = useRef(ragContext);
+  ragContextRef.current = ragContext;
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const abortRef = useRef<AbortController | null>(null);
+  const loadingTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const titleGeneratedRef = useRef(false);
   const resourcesRef = useRef(state.resources);
   resourcesRef.current = state.resources;
   const conversationsRef = useRef(state.conversations);
   conversationsRef.current = state.conversations;
+  const convIdRef = useRef(state.selectedConversationId);
+  convIdRef.current = state.selectedConversationId;
+  const profileRef = useRef(state.profile);
+  profileRef.current = state.profile;
   const prevConvIdRef = useRef<string | null>(null);
 
   const selectedAgent = baseAgents.find((a) => a.agent_id === selectedBaseAgentId) ?? null;
   const recordLearning = useRecordLearning();
+  const workspaceStats = [
+    { label: "当前画像", value: state.profile.knowledge_profile.overall_level || "待评估" },
+    { label: "学习路径", value: state.learningPath.nodes.length > 0 ? `${state.learningPath.nodes.length} 步` : "待生成" },
+    { label: "资源数量", value: state.resources.length > 0 ? `${state.resources.length} 项` : "待生成" },
+    { label: "推荐内容", value: state.recommendations.length > 0 ? `${state.recommendations.length} 条` : "待生成" }
+  ];
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
 
+  // Load messages from global state when switching conversations
   useEffect(() => {
     if (state.activeMessages.length > 0) {
-      const converted: ChatMsg[] = state.activeMessages.map((msg) => ({
-        id: msg.id,
-        role: msg.role as ChatMsg["role"],
-        content: msg.content,
-        streaming: false,
-      }));
+      const converted: ChatMsg[] = state.activeMessages.map((msg) => {
+        const chatMsg: ChatMsg = {
+          id: msg.id,
+          role: msg.role as ChatMsg["role"],
+          content: msg.content,
+          streaming: false,
+        };
+        // Reconstruct intentResult from persisted metadata
+        const ir = msg.metadata?.intent_result as Record<string, unknown> | undefined;
+        if (ir && typeof ir === "object") {
+          chatMsg.intentResult = {
+            intent: String(ir.intent || msg.intent || "tutoring"),
+            confidence: Number(ir.confidence ?? 1),
+            method: String(ir.method || "loaded"),
+            result: (ir.result || {}) as Record<string, unknown>,
+          };
+        }
+        return chatMsg;
+      });
       setMessages(converted);
     } else {
       setMessages([]);
     }
   }, [state.activeMessages]);
+
+  // Consume pending message from sidebar navigation
+  useEffect(() => {
+    if (state.pendingMessage) {
+      const msg = state.pendingMessage;
+      dispatch({ type: "SET_PENDING_MESSAGE", payload: null });
+      setInput(msg);
+      setTimeout(() => sendIntentMessage(msg), 50);
+    }
+  }, [state.pendingMessage, dispatch, sendIntentMessage]);
+
+  // Listen for quick action messages from WelcomePanel
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const msg = (e as CustomEvent).detail;
+      if (msg) {
+        setInput(msg);
+        setTimeout(() => sendIntentMessage(msg), 50);
+      }
+    };
+    window.addEventListener("chat-send-message", handler);
+    return () => window.removeEventListener("chat-send-message", handler);
+  }, [sendIntentMessage]);
+
+  // Auto-send welcome on new empty conversation
+  useEffect(() => {
+    if (messages.length === 0 && user && !state.selectedConversationId) {
+      apiGet<Record<string, unknown>>("/learning/welcome").then((welcomeData) => {
+        if (welcomeData) {
+          const welcomeMsg: ChatMsg = {
+            id: crypto.randomUUID(),
+            role: "assistant",
+            content: "",
+            streaming: false,
+            intentResult: { intent: "welcome", confidence: 1.0, method: "auto", result: welcomeData },
+          };
+          setMessages([welcomeMsg]);
+        }
+      }).catch(() => {});
+    }
+  }, [user]); // only on mount / user change
 
   useEffect(() => {
     titleGeneratedRef.current = false;
@@ -99,6 +182,12 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
     const streamMsg: ChatMsg = { id: crypto.randomUUID(), role: "assistant", content: "", streaming: true };
     setMessages((prev) => [...prev, userMsg, streamMsg]);
     dispatch({ type: "SET_LOADING", payload: true });
+    // Safety timeout: force-clear loading if SSE stalls (5 min)
+    if (loadingTimerRef.current) clearTimeout(loadingTimerRef.current);
+    loadingTimerRef.current = setTimeout(() => {
+      dispatch({ type: "SET_LOADING", payload: false });
+      setMessages((prev) => prev.map((m) => (m.id === streamMsg.id && m.streaming ? { ...m, streaming: false, content: m.content || "响应超时，请重试" } : m)));
+    }, 300_000);
 
     // Use SSE streaming for tutor answers
     let usedStreaming = false;
@@ -108,22 +197,51 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
 
       let streamError: string | null = null;
       await apiPostStream("/learning/chat-stream", {
-        user_id: user.id,
         message: content,
-        conversation_id: state.selectedConversationId,
+        conversation_id: convIdRef.current,
         base_agent_id: selectedBaseAgentId,
+        rag_context: ragContextRef.current.length > 0 ? ragContextRef.current : undefined,
       }, (evt) => {
         if (evt.type === "error") {
-          streamError = String((evt.data as Record<string, unknown>).message || "AI 服务暂时不可用，请重试");
+          const errData = evt.data as Record<string, unknown>;
+          const errMsg = String(errData.message || "AI 服务暂时不可用，请重试");
+          const errCode = errData.error_code ? String(errData.error_code) : undefined;
+          streamError = getFriendlyError(errMsg, errCode);
         } else if (evt.type === "text_delta" && typeof (evt.data as Record<string, unknown>).content === "string") {
           streamedContent += (evt.data as Record<string, unknown>).content;
           setMessages((prev) => prev.map((m) => m.id === streamMsg.id ? { ...m, content: streamedContent } : m));
         } else if (evt.type === "result") {
           resultData = evt.data as Record<string, unknown>;
+        } else if (evt.type === "quiz_followup") {
+          const quizData = evt.data as Record<string, unknown>;
+          const quizMsgId = crypto.randomUUID();
+          const quizMsg: ChatMsg = {
+            id: quizMsgId,
+            role: "assistant",
+            content: "",
+            streaming: false,
+            intentResult: { intent: "tutoring", confidence: 1.0, method: "streaming", result: quizData },
+            onQuizComplete: (answerResult: IntentResult) => {
+              setMessages((prev) => prev.map((m) =>
+                m.id === quizMsgId ? { ...m, intentResult: answerResult, onQuizComplete: undefined } : m,
+              ));
+              const ar = answerResult.result;
+              if (ar.updated_dimension) {
+                apiGet<StudentProfile>("/profiles/me")
+                  .then((p) => dispatch({ type: "SET_PROFILE", payload: p }))
+                  .catch(() => {});
+                apiGet<Recommendation[]>("/recommendations/")
+                  .then((recs) => dispatch({ type: "SET_RECOMMENDATIONS", payload: recs }))
+                  .catch(() => {});
+              }
+            },
+          };
+          setMessages((prev) => [...prev, quizMsg]);
         }
       }, controller.signal);
 
       usedStreaming = true;
+      setRagContext([]);
 
       if (streamError) {
         const errMsg = streamError;
@@ -156,23 +274,62 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
             apiGet<StudentProfile>("/profiles/me")
               .then((p) => dispatch({ type: "SET_PROFILE", payload: p }))
               .catch(() => {});
+            apiGet<Recommendation[]>("/recommendations/")
+              .then((recs) => dispatch({ type: "SET_RECOMMENDATIONS", payload: recs }))
+              .catch(() => {});
           }
         };
       }
 
       setMessages((prev) => prev.map((m) => (m.id === streamMsg.id ? finalMsg : m)));
 
-      // Sync global state for non-tutoring intents
+      // Sync intent results to global state for right panels
       const r = res.result;
-      if (res.intent === "resource_generation" && r.profile) {
-        dispatch({ type: "SET_PROFILE", payload: r.profile as StudentProfile });
+      if (res.intent === "resource_generation") {
+        if (r.profile) dispatch({ type: "SET_PROFILE", payload: r.profile as StudentProfile });
         if (r.path) dispatch({ type: "SET_PATH", payload: r.path as LearningPath });
         if (r.resources) dispatch({ type: "SET_RESOURCES", payload: r.resources as LearningResource[] });
         if (r.recommendations) dispatch({ type: "SET_RECOMMENDATIONS", payload: r.recommendations as Recommendation[] });
+        if (r.workflow) dispatch({ type: "SET_WORKFLOW", payload: r.workflow as AgentWorkflow });
         if (r.conversation_id) dispatch({ type: "SET_SELECTED_CONVERSATION", payload: String(r.conversation_id) });
+      } else if (res.intent === "learning_path" && r.path_id) {
+        dispatch({ type: "SET_PATH", payload: asType<LearningPath>(r) });
+      } else if (res.intent === "exercise" && r.resource_id) {
+        dispatch({ type: "SET_RESOURCES", payload: [...resourcesRef.current, asType<LearningResource>(r)] });
+      } else if (res.intent === "tutoring") {
+        // Refresh recommendations after tutor answer (backend invalidates cache)
+        apiGet<Recommendation[]>("/recommendations/")
+          .then((recs) => dispatch({ type: "SET_RECOMMENDATIONS", payload: recs }))
+          .catch(() => {});
+      }
+
+      // Add new conversation to sidebar in real-time
+      const newConvId = res.conversation_id || (typeof r.conversation_id === "string" ? r.conversation_id : null);
+      if (newConvId && !conversationsRef.current.some((c) => c.conversation_id === newConvId)) {
+        dispatch({ type: "SET_SELECTED_CONVERSATION", payload: newConvId });
+        convIdRef.current = newConvId;
+        dispatch({
+          type: "ADD_CONVERSATION",
+          payload: {
+            conversation_id: newConvId,
+            user_id: user!.id,
+            title: "新对话",
+            messages: [],
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString(),
+          },
+        });
+      }
+
+      // React to backend auto-generation changes
+      const changes = r.changes as Record<string, unknown> | undefined;
+      if (changes?.path_generated) {
+        dispatch({ type: "SET_NOTICE", payload: "学习路径已自动生成，可在学习地图中查看" });
+        dispatch({ type: "BUMP_PATH_VERSION" });
       }
     } catch (err) {
       if (err instanceof DOMException && err.name === "AbortError") {
+        if (loadingTimerRef.current) { clearTimeout(loadingTimerRef.current); loadingTimerRef.current = null; }
         dispatch({ type: "SET_LOADING", payload: false });
         setMessages((prev) =>
           prev.map((m) =>
@@ -188,17 +345,18 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
 
     if (usedStreaming) {
       // Auto-generate conversation title from streamed content
-      if (!titleGeneratedRef.current && state.selectedConversationId && streamedContent) {
+      if (!titleGeneratedRef.current && convIdRef.current && streamedContent) {
         titleGeneratedRef.current = true;
         const title = generateTitle(streamedContent);
         dispatch({
           type: "SET_CONVERSATIONS",
           payload: conversationsRef.current.map((c) =>
-            c.conversation_id === state.selectedConversationId ? { ...c, title } : c
+            c.conversation_id === convIdRef.current ? { ...c, title } : c
           ),
         });
-        apiPatch(`/conversations/${state.selectedConversationId}`, { title }).catch(() => {});
+        apiPatch(`/conversations/${convIdRef.current}`, { title }).catch(() => {});
       }
+      if (loadingTimerRef.current) { clearTimeout(loadingTimerRef.current); loadingTimerRef.current = null; }
       dispatch({ type: "SET_LOADING", payload: false });
       setMessages((prev) => prev.map((m) => (m.id === streamMsg.id && m.streaming ? { ...m, streaming: false } : m)));
       return;
@@ -207,9 +365,8 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
     // Fallback: sync POST
     try {
       const res = await apiPost<IntentResult>("/learning/chat", {
-        user_id: user.id,
         message: content,
-        conversation_id: state.selectedConversationId,
+        conversation_id: convIdRef.current,
         base_agent_id: selectedBaseAgentId,
       });
       const finalMsg: ChatMsg = {
@@ -231,6 +388,9 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
             apiGet<StudentProfile>("/profiles/me")
               .then((p) => dispatch({ type: "SET_PROFILE", payload: p }))
               .catch(() => {});
+            apiGet<Recommendation[]>("/recommendations/")
+              .then((recs) => dispatch({ type: "SET_RECOMMENDATIONS", payload: recs }))
+              .catch(() => {});
           }
         };
       }
@@ -239,29 +399,33 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
 
       // Sync intent results to global state for right panels
       const r = res.result;
-      if (res.intent === "resource_generation" && r.profile) {
-        dispatch({ type: "SET_PROFILE", payload: r.profile as StudentProfile });
+      if (res.intent === "resource_generation") {
+        if (r.profile) dispatch({ type: "SET_PROFILE", payload: r.profile as StudentProfile });
         if (r.path) dispatch({ type: "SET_PATH", payload: r.path as LearningPath });
         if (r.resources) dispatch({ type: "SET_RESOURCES", payload: r.resources as LearningResource[] });
         if (r.recommendations) dispatch({ type: "SET_RECOMMENDATIONS", payload: r.recommendations as Recommendation[] });
         if (r.workflow) dispatch({ type: "SET_WORKFLOW", payload: r.workflow as AgentWorkflow });
         if (r.conversation_id) dispatch({ type: "SET_SELECTED_CONVERSATION", payload: String(r.conversation_id) });
       } else if (res.intent === "learning_path" && r.path_id) {
-        dispatch({ type: "SET_PATH", payload: r as unknown as LearningPath });
+        dispatch({ type: "SET_PATH", payload: asType<LearningPath>(r) });
       } else if (res.intent === "exercise" && r.resource_id) {
-        dispatch({ type: "SET_RESOURCES", payload: [...resourcesRef.current, r as unknown as LearningResource] });
+        dispatch({ type: "SET_RESOURCES", payload: [...resourcesRef.current, asType<LearningResource>(r)] });
+      }
+
+      // React to backend auto-generation changes
+      const changes = r.changes as Record<string, unknown> | undefined;
+      if (changes?.path_generated) {
+        dispatch({ type: "SET_NOTICE", payload: "学习路径已自动生成，可在学习地图中查看" });
+        dispatch({ type: "BUMP_PATH_VERSION" });
       }
 
       // Record learning activity (only for resource generation, not tutoring/exercise which need real assessment)
-      const kp = state.profile?.learning_goal?.current_goal || content.slice(0, 50);
-      if (res.intent === "resource_generation") {
-        recordLearning({ knowledge_point: kp, resource_type: "document", score: 0.3 });
-      }
-
+      const kp = profileRef.current?.learning_goal?.current_goal || content.slice(0, 50);
       // Add new conversation to sidebar in real-time
       const newConvId = res.conversation_id || (typeof r.conversation_id === "string" ? r.conversation_id : null);
       if (newConvId && !conversationsRef.current.some((c) => c.conversation_id === newConvId)) {
         dispatch({ type: "SET_SELECTED_CONVERSATION", payload: newConvId });
+        convIdRef.current = newConvId; // update ref immediately for title generation below
         dispatch({
           type: "ADD_CONVERSATION",
           payload: {
@@ -276,7 +440,7 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
       }
 
       // Auto-generate conversation title from first assistant response
-      if (!titleGeneratedRef.current && state.selectedConversationId) {
+      if (!titleGeneratedRef.current && convIdRef.current) {
         titleGeneratedRef.current = true;
         let titleContent = "";
         if (res.intent === "general_chat" && r.reply) titleContent = String(r.reply);
@@ -288,10 +452,10 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
           dispatch({
             type: "SET_CONVERSATIONS",
             payload: conversationsRef.current.map((c) =>
-              c.conversation_id === state.selectedConversationId ? { ...c, title } : c
+              c.conversation_id === convIdRef.current ? { ...c, title } : c
             ),
           });
-          apiPatch(`/conversations/${state.selectedConversationId}`, { title }).catch(() => {});
+          apiPatch(`/conversations/${convIdRef.current}`, { title }).catch(() => {});
         }
       }
     } catch (err) {
@@ -306,15 +470,19 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
         prev.map((m) => (m.id === streamMsg.id ? { ...m, content: errMsg, streaming: false } : m))
       );
     } finally {
+      if (loadingTimerRef.current) { clearTimeout(loadingTimerRef.current); loadingTimerRef.current = null; }
       dispatch({ type: "SET_LOADING", payload: false });
       setMessages((prev) =>
         prev.map((m) => (m.id === streamMsg.id && m.streaming ? { ...m, streaming: false } : m))
       );
     }
-  }, [user, state.selectedConversationId, state.conversations, state.resources, selectedBaseAgentId, dispatch, onAuth, recordLearning]);
+  }, [user, selectedBaseAgentId, dispatch, onAuth, recordLearning]);
 
+  const pipelineBusyRef = useRef(false);
   const sendPipelineMessage = useCallback(async (content: string, images?: string[]) => {
     if (!user) { onAuth(); return; }
+    if (pipelineBusyRef.current) return;
+    pipelineBusyRef.current = true;
     const displayContent = content + (images?.length ? ` [${images.length}张图片]` : "");
     const userMsg: ChatMsg = { id: crypto.randomUUID(), role: "user", content: displayContent, images };
     const assistantMsg: ChatMsg = { id: crypto.randomUUID(), role: "assistant", content: "正在启动学习流程...", streaming: true, trace: [] };
@@ -330,9 +498,9 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
 
     try {
       await apiPostStream("/learning/start-stream", {
-        user_id: user.id,
         message: content,
-        conversation_id: state.selectedConversationId,
+        conversation_id: convIdRef.current,
+        base_agent_id: selectedBaseAgentId,
       }, (evt) => {
         const data = evt.data as Record<string, unknown>;
         if (evt.type === "error") {
@@ -391,9 +559,10 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
       const errMsg = err instanceof Error ? getFriendlyError(err.message) : "请求失败，请重试";
       setMessages((prev) => prev.map((m) => m.id === assistantMsg.id ? { ...m, content: errMsg, streaming: false } : m));
     } finally {
+      pipelineBusyRef.current = false;
       setMessages((prev) => prev.map((m) => m.id === assistantMsg.id && m.streaming ? { ...m, streaming: false } : m));
     }
-  }, [user, state.selectedConversationId, dispatch, onAuth]);
+  }, [user, selectedBaseAgentId, dispatch, onAuth]);
 
   const sendMessage = useCallback(async (images?: string[]) => {
     if (!user) {
@@ -415,24 +584,32 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
     if (key === "custom-agent") return onCreateAgent();
     if (key === "select-agent") return onSelectAgent();
     if (key === "model-config") return onModelConfig?.();
+    if (key === "upload-image") {
+      (window as any).__chatInputRefs?.openImageUpload?.();
+      return;
+    }
+    if (key === "upload-video") {
+      (window as any).__chatInputRefs?.openVideoUpload?.();
+      return;
+    }
+  }, [onCreateAgent, onSelectAgent, onModelConfig]);
 
-    const resourceTypeMap: Record<string, { label: string; type: ResourceType }> = {
-      "add-document": { label: "文档资源", type: "document" },
-      "add-reading": { label: "阅读材料", type: "reading" },
-      "add-quiz": { label: "题目资源", type: "quiz" },
-      "add-code": { label: "代码实操", type: "code_case" },
-      "add-mindmap": { label: "思维导图", type: "mindmap" },
-      "add-video": { label: "视频动画", type: "video" },
-      "add-flowchart": { label: "流程图", type: "flowchart" },
-    };
-    const mapped = resourceTypeMap[key];
-    if (!mapped) return;
+  const RESOURCE_HINTS = [
+    { label: "文档资源", type: "document" as ResourceType },
+    { label: "阅读材料", type: "reading" as ResourceType },
+    { label: "题目资源", type: "quiz" as ResourceType },
+    { label: "代码实操", type: "code_case" as ResourceType },
+    { label: "思维导图", type: "mindmap" as ResourceType },
+    { label: "视频动画", type: "video" as ResourceType },
+    { label: "流程图", type: "flowchart" as ResourceType },
+  ];
+
+  const handleResourceHint = useCallback((label: string) => {
     if (!user) return onAuth();
-
-    const topic = input.trim() || state.profile.learning_goal.current_goal || "通用知识点";
-    setInput(`请为「${topic}」生成${mapped.label}`);
+    const topic = input.trim() || profileRef.current.learning_goal.current_goal || "通用知识点";
+    setInput(`请为「${topic}」生成${label}`);
     setMode("pipeline");
-  }, [user, input, state.profile, onCreateAgent, onSelectAgent, onModelConfig, onAuth]);
+  }, [user, input, onAuth]);
 
   const TYPE_LABELS: Record<string, string> = {
     document: "文档", mindmap: "思维导图", quiz: "测验", reading: "阅读",
@@ -450,32 +627,53 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
       const streamMsg: ChatMsg = { id: msgId, role: "assistant", content: "", streaming: true };
       setMessages((prev) => [...prev, streamMsg]);
 
-      apiPost<IntentResult>("/learning/chat/post-test", {
+      apiPost<{
+        quiz_pending?: boolean;
+        question?: Record<string, unknown>;
+        quiz_session?: Record<string, unknown>;
+        knowledge_point?: string;
+        error?: string;
+      }>("/learning/chat/post-quiz-start", {
         knowledge_point: payload,
-        conversation_id: state.selectedConversationId,
+        conversation_id: convIdRef.current,
+        base_agent_id: selectedBaseAgentId,
       }).then((res) => {
-        const finalMsg: ChatMsg = { id: msgId, role: "assistant", content: "", streaming: false, intentResult: res };
-        if (res.result.quiz_pending) {
-          finalMsg.onQuizComplete = (answerResult: IntentResult) => {
-            setMessages((prev) => prev.map((m) =>
-              m.id === msgId ? { ...m, intentResult: answerResult, onQuizComplete: undefined } : m,
-            ));
-            const ar = answerResult.result;
-            if (ar.updated_dimension) {
-              apiGet<StudentProfile>("/profiles/me")
-                .then((p) => dispatch({ type: "SET_PROFILE", payload: p }))
-                .catch(() => {});
-            }
+        if (res.quiz_pending && res.question && res.quiz_session) {
+          const kp = res.knowledge_point || payload;
+          const quizMsg: ChatMsg = {
+            id: msgId,
+            role: "assistant",
+            content: "",
+            streaming: false,
+            postQuiz: {
+              question: res.question as any,
+              quizSession: res.quiz_session as any,
+              knowledgePoint: kp,
+              conversationId: convIdRef.current,
+              onComplete: () => {
+                apiGet<StudentProfile>("/profiles/me")
+                  .then((p) => dispatch({ type: "SET_PROFILE", payload: p }))
+                  .catch(() => {});
+                apiGet<Recommendation[]>("/recommendations/")
+                  .then((recs) => dispatch({ type: "SET_RECOMMENDATIONS", payload: recs }))
+                  .catch(() => {});
+              },
+            },
           };
+          setMessages((prev) => prev.map((m) => (m.id === msgId ? quizMsg : m)));
+        } else {
+          setMessages((prev) => prev.map((m) =>
+            m.id === msgId ? { ...m, content: res.error || "生成练习失败", streaming: false } : m
+          ));
         }
-        setMessages((prev) => prev.map((m) => (m.id === msgId ? finalMsg : m)));
-      }).catch(() => {
+      }).catch((err) => {
+        const errMsg = err instanceof Error ? getFriendlyError(err.message) : "生成练习失败，请重试";
         setMessages((prev) => prev.map((m) =>
-          m.id === msgId ? { ...m, content: "生成测试失败，请重试", streaming: false } : m
+          m.id === msgId ? { ...m, content: errMsg, streaming: false } : m
         ));
       });
     }
-  }, [state.selectedConversationId, dispatch]);
+  }, [dispatch]);
 
   // Extract pipeline trace from the latest streaming/completed assistant message
   const pipelineTrace = messages.reduce<TraceEntry[]>((acc, m) => {
@@ -507,34 +705,152 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
         </button>
       </div>
 
+      <div className="chat-workspace-hero">
+        <div className="chat-workspace-copy">
+          <span className="chat-workspace-kicker">{mode === "intent" ? "智能对话模式" : "学习流程模式"}</span>
+          <h2>{state.profile.learning_goal.current_goal || "开始一轮新的学习协作"}</h2>
+          <p>
+            {mode === "intent"
+              ? "适合提问、追问、解释概念或针对图片内容继续辅导。"
+              : "适合直接输入学习目标，系统会自动组织画像、路径、资源与推荐结果。"}
+          </p>
+          <div className="chat-workspace-tags">
+            <span>{state.profile.learning_behavior.last_knowledge_point || "等待识别知识点"}</span>
+            <span>{user ? `会话 ${state.selectedConversationId ? "继续中" : "未开始"}` : "未登录"}</span>
+          </div>
+        </div>
+
+        <div className="chat-workspace-stats">
+          {workspaceStats.map((item) => (
+            <article className="chat-workspace-stat" key={item.label}>
+              <span>{item.label}</span>
+              <strong>{item.value}</strong>
+            </article>
+          ))}
+        </div>
+      </div>
+
       <div className="chat-messages">
         {messages.length === 0 && (
           <div className="chat-empty">
-            {mode === "intent" ? (
-              <p>输入问题，AI 将自动识别意图并路由到合适的模块。</p>
-            ) : (
-              <p>输入学习目标，AI 将构建画像、规划路径并生成资源。</p>
-            )}
+            <div className="chat-empty-card">
+              <h3>{mode === "intent" ? "开始智能对话" : "启动学习流程"}</h3>
+              {mode === "intent" ? (
+                <p>输入问题，AI 将自动识别意图并路由到合适的模块。</p>
+              ) : (
+                <p>输入学习目标，AI 将构建画像、规划路径并生成资源。</p>
+              )}
+              <div className="chat-empty-suggestions">
+                <button type="button" onClick={() => setInput("帮我出几道快速排序的练习题")}>练习刷题</button>
+                <button type="button" onClick={() => setInput("帮我生成一个思维导图")}>生成资源</button>
+                <button type="button" onClick={() => setInput("展示学习地图")}>学习地图</button>
+                <button type="button" onClick={() => setInput("看看我的学习情况")}>学习看板</button>
+                <button type="button" onClick={() => setInput("帮我规划一个数据结构的学习路径")}>规划路径</button>
+                <button type="button" onClick={() => setInput("评估一下我的学习掌握程度")}>学习评估</button>
+              </div>
+            </div>
           </div>
         )}
         {messages.map((msg) => (
-          <ChatMessage key={msg.id} message={{ ...msg, onAction: handleAction }} />
+          <ErrorBoundary key={msg.id} fallback={<div style={{ padding: 12, color: "#ef4444", fontSize: 13 }}>消息渲染出错，请刷新重试。</div>}>
+            <ChatMessage message={{ ...msg, onAction: handleAction }} />
+          </ErrorBoundary>
         ))}
         <div ref={messagesEndRef} />
       </div>
 
-      <div className="floating-learning-input">
-        <PlusMenu onSelect={handlePlusMenuSelect} />
-        <ChatInput
-          value={input}
-          onChange={setInput}
-          onSend={sendMessage}
-          loading={loading}
-          onStop={() => abortRef.current?.abort()}
-          agentName={selectedAgent?.name ?? "系统默认基座智能体"}
-          isSystemAgent={selectedAgent?.is_system ?? true}
-          disabled={!user}
-        />
+      <div className="floating-learning-input-wrapper">
+        <div className="resource-hint-bar">
+          {RESOURCE_HINTS.map((h) => (
+            <button
+              key={h.type}
+              className="resource-hint-chip"
+              type="button"
+              onClick={() => handleResourceHint(h.label)}
+            >
+              {h.label}
+            </button>
+          ))}
+        </div>
+        {ragContext.length > 0 && (
+          <div className="tutor-context-bar">
+            <span className="tutor-context-label">引用知识：</span>
+            {ragContext.map((ctx) => (
+              <span key={ctx.chunk_id} className="tutor-context-tag">
+                {ctx.title}
+                <button type="button" onClick={() => setRagContext((prev) => prev.filter((p) => p.chunk_id !== ctx.chunk_id))}>
+                  <X size={12} />
+                </button>
+              </span>
+            ))}
+          </div>
+        )}
+
+        {ragPanelOpen && (
+          <div className="chat-rag-panel">
+            <div className="chat-rag-search">
+              <Search size={14} />
+              <input
+                className="chat-rag-input"
+                placeholder="检索知识库..."
+                value={ragQuery}
+                onChange={(e) => setRagQuery(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && ragQuery.trim()) {
+                    setRagLoading(true);
+                    apiPost<{ results: Array<{ chunk_id: string; title: string; content: string; subject: string; score: number }> }>("/knowledge/search", { query: ragQuery.trim(), top_k: 5 })
+                      .then((data) => setRagResults(data.results ?? []))
+                      .catch(() => setRagResults([]))
+                      .finally(() => setRagLoading(false));
+                  }
+                }}
+              />
+              <button type="button" className="chat-rag-close" onClick={() => { setRagPanelOpen(false); setRagResults(null); }}>
+                <X size={14} />
+              </button>
+            </div>
+            {ragLoading && <div className="chat-rag-loading">搜索中...</div>}
+            {ragResults && (
+              <div className="chat-rag-results">
+                {ragResults.length === 0 ? (
+                  <div className="chat-rag-empty">未找到相关知识</div>
+                ) : (
+                  ragResults.map((r) => (
+                    <div key={r.chunk_id} className="chat-rag-item" onClick={() => {
+                      setRagContext((prev) => prev.some((p) => p.chunk_id === r.chunk_id) ? prev : [...prev, { chunk_id: r.chunk_id, title: r.title, content: r.content, subject: r.subject }]);
+                    }}>
+                      <div className="chat-rag-item-title">{r.title}</div>
+                      <div className="chat-rag-item-content">{r.content.length > 100 ? r.content.slice(0, 100) + "..." : r.content}</div>
+                      <div className="chat-rag-item-meta">{r.subject} · 相关度 {Math.round(r.score * 100)}%</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="floating-learning-input">
+          <div className="input-left-tools">
+            <PlusMenu onSelect={handlePlusMenuSelect} />
+            <button
+              type="button"
+              className={`rag-toggle-btn ${ragPanelOpen ? "active" : ""}`}
+              onClick={() => setRagPanelOpen(!ragPanelOpen)}
+              title="知识检索"
+            >
+              <Search size={16} />
+            </button>
+          </div>
+          <ChatInput
+            value={input}
+            onChange={setInput}
+            onSend={sendMessage}
+            loading={loading}
+            onStop={() => abortRef.current?.abort()}
+            disabled={!user}
+          />
+        </div>
       </div>
     </div>
   );

@@ -31,7 +31,7 @@ from app.workflows.langgraph_runtime import (
     node_profile_agent,
     node_quality_agent,
     node_recommendation_agent,
-    node_resource_agent,
+    node_resource_planner,
     node_tutor_agent,
     route_after_master,
     route_after_path,
@@ -175,7 +175,7 @@ class TestResourceNode:
             "workflow_id": str(uuid4()), "errors": [], "completed_steps": [],
             "node_timings": {}, "tasks": [], "events": [],
         }
-        result = node_resource_agent(state)
+        result = node_resource_planner(state)
         assert len(result["generated_resources"]) == 1
         assert "resource_agent" in result["completed_steps"]
 
@@ -189,7 +189,7 @@ class TestResourceNode:
             "workflow_id": str(uuid4()), "errors": [], "completed_steps": [],
             "node_timings": {}, "tasks": [], "events": [],
         }
-        result = node_resource_agent(state)
+        result = node_resource_planner(state)
         assert len(result["generated_resources"]) == 2
         for r in result["generated_resources"]:
             assert r.get("status") == "failed" or "失败" in r.get("content", "")

@@ -71,21 +71,29 @@ def apply_pending_events(user_id: UUID, max_events: int = 20) -> Optional[Studen
 
     profile = repository.get_profile(user_id)
     if not profile:
-        # No master profile yet — only DIAGNOSTIC_QUIZ can create one
+        # No master profile yet — DIAGNOSTIC_QUIZ and LLM_EXTRACT can create one
+        _cold_start_types = {ProfileEventType.DIAGNOSTIC_QUIZ.value, ProfileEventType.LLM_EXTRACT.value}
         for ev in events:
-            if ev["event_type"] == ProfileEventType.DIAGNOSTIC_QUIZ.value:
-                profile = _apply_diagnostic_quiz(None, ev["event_payload"], ev["confidence"])
-                profile = repository.save_profile(profile)
-                repository.update_event_status(ev["id"], "applied")
+            if ev["event_type"] in _cold_start_types:
+                handler = _apply_diagnostic_quiz if ev["event_type"] == ProfileEventType.DIAGNOSTIC_QUIZ.value else _apply_llm_extract
+                profile = handler(None, ev["event_payload"], ev["confidence"])
+                profile = repository.save_profile_and_update_event(profile, ev["id"], "applied")
             else:
                 repository.update_event_status(ev["id"], "skipped", "No master profile yet")
         return profile
 
+    # Sync in-memory version with the DB's latest profile_version.
+    # get_profile reads version from profile_json (typically 1 from snapshots),
+    # but save_profile checks against the DB row's profile_version column.
+    # Without this sync, any handler that does version+1 would mismatch.
+    db_latest_version = repository.get_latest_profile_version(user_id)
+    if db_latest_version is not None and profile.version != db_latest_version:
+        profile = profile.model_copy(update={"version": db_latest_version})
+
     for ev in events:
         try:
             profile = _apply_event(profile, ev["event_type"], ev["event_payload"], ev["confidence"])
-            profile = repository.save_profile(profile)
-            repository.update_event_status(ev["id"], "applied")
+            profile = repository.save_profile_and_update_event(profile, ev["id"], "applied")
         except Exception as exc:
             logger.exception("Failed to apply profile event %s", ev["id"])
             repository.update_event_status(ev["id"], "failed", str(exc))
@@ -122,13 +130,38 @@ def _apply_event(
 # ── Type-specific handlers ──────────────────────────────────────────────
 
 def _apply_diagnostic_quiz(profile: Optional[StudentProfile], payload: dict, confidence: float) -> StudentProfile:
-    """Cold-start: full profile replacement from diagnostic quiz."""
+    """Cold-start: full profile creation from diagnostic quiz.
+
+    When profile exists, merge knowledge and goal fields while preserving
+    accumulated behavioral state (learning_behavior, resource_preference, etc.).
+    """
     if profile is None:
-        return StudentProfile.model_validate(payload)
-    # If profile exists, only overwrite if diagnostic confidence is high enough
+        new_profile = StudentProfile.model_validate(payload)
+        # Ensure version doesn't conflict with any existing DB row
+        try:
+            from app.repositories.vertical_loop_repository import repository
+            db_version = repository.get_latest_profile_version(new_profile.user_id)
+            if db_version is not None and db_version >= new_profile.version:
+                new_profile = new_profile.model_copy(update={"version": db_version + 1})
+        except Exception:
+            pass
+        return new_profile
+    # If profile exists, merge knowledge/goal from diagnostic onto existing profile
     if confidence >= 0.8:
         new = StudentProfile.model_validate(payload)
-        return new.model_copy(update={"version": profile.version + 1})
+        return profile.model_copy(update={
+            "knowledge_profile": new.knowledge_profile,
+            "learning_goal": new.learning_goal,
+            "basic_info": new.basic_info,
+            "completeness_score": max(profile.completeness_score, new.completeness_score),
+            "confidence_score": max(profile.confidence_score, new.confidence_score * confidence),
+            "dynamic_update": DynamicUpdate(
+                last_updated_at=datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
+                update_source="diagnostic_quiz",
+                update_reason="diagnostic quiz merge",
+            ),
+            "version": profile.version + 1,
+        })
     return profile
 
 
@@ -174,23 +207,39 @@ def _apply_dimension_update(
 
 
 def _apply_adaptive_quiz(profile: StudentProfile, payload: dict, confidence: float) -> StudentProfile:
-    return _apply_dimension_update(profile, payload["knowledge_point"], payload["dimension"], confidence)
+    kp = payload.get("knowledge_point")
+    dim = payload.get("dimension")
+    if not kp or not dim:
+        return profile
+    return _apply_dimension_update(profile, kp, dim, confidence)
 
 
 def _apply_exercise_grade(profile: StudentProfile, payload: dict, confidence: float) -> StudentProfile:
-    return _apply_dimension_update(profile, payload["knowledge_point"], payload["dimension"], confidence)
+    kp = payload.get("knowledge_point")
+    dim = payload.get("dimension")
+    if not kp or not dim:
+        return profile
+    return _apply_dimension_update(profile, kp, dim, confidence)
 
 
 def _apply_path_node_complete(profile: StudentProfile, payload: dict, confidence: float) -> StudentProfile:
-    return _apply_dimension_update(profile, payload["knowledge_point"], payload["dimension"], confidence)
+    kp = payload.get("knowledge_point")
+    dim = payload.get("dimension")
+    if not kp or not dim:
+        return profile
+    return _apply_dimension_update(profile, kp, dim, confidence)
 
 
 def _apply_review_complete(profile: StudentProfile, payload: dict, confidence: float) -> StudentProfile:
-    return _apply_dimension_update(profile, payload["knowledge_point"], payload["dimension"], confidence)
+    kp = payload.get("knowledge_point")
+    dim = payload.get("dimension")
+    if not kp or not dim:
+        return profile
+    return _apply_dimension_update(profile, kp, dim, confidence)
 
 
 def _apply_wrong_points(profile: StudentProfile, payload: dict, confidence: float) -> StudentProfile:
-    """Append wrong points to weak_topics (deduplicated)."""
+    """Append wrong points to weak_topics and ensure they exist in topic_dimensions."""
     wrong_points = payload.get("wrong_points", [])
     if not wrong_points:
         return profile
@@ -198,7 +247,16 @@ def _apply_wrong_points(profile: StudentProfile, payload: dict, confidence: floa
     existing = list(profile.knowledge_profile.weak_topics)
     merged = list(dict.fromkeys(existing + wrong_points))
 
-    new_kp = profile.knowledge_profile.model_copy(update={"weak_topics": merged})
+    # Ensure each wrong point has a default dimension entry
+    topic_dimensions = dict(profile.knowledge_profile.topic_dimensions)
+    for kp in wrong_points:
+        if kp not in topic_dimensions:
+            topic_dimensions[kp] = KnowledgeDimension(mastery="low", application="low", memory="low", understanding="low")
+
+    new_kp = profile.knowledge_profile.model_copy(update={
+        "weak_topics": merged,
+        "topic_dimensions": topic_dimensions,
+    })
     return profile.model_copy(update={
         "knowledge_profile": new_kp,
         "dynamic_update": DynamicUpdate(
@@ -299,10 +357,11 @@ def _apply_llm_extract(profile: StudentProfile, payload: dict, confidence: float
 
 
 def _apply_resource_consumption(profile: StudentProfile, payload: dict, confidence: float) -> StudentProfile:
-    """Update learning_behavior from resource consumption data."""
+    """Update learning_behavior and resource_preference from resource consumption data."""
     beh = profile.learning_behavior
     duration = payload.get("duration_seconds", 0)
     completion = payload.get("completion", False)
+    resource_type = payload.get("resource_type", "")
 
     # Running average for study minutes
     new_avg = int(beh.average_study_minutes * 0.7 + (duration / 60) * 0.3) if duration > 0 else beh.average_study_minutes
@@ -315,8 +374,22 @@ def _apply_resource_consumption(profile: StudentProfile, payload: dict, confiden
         "completion_rate": round(min(new_rate, 1.0), 2),
     })
 
+    # Auto-update resource_preference weights
+    # Increase preference for engaged type, decay others to maintain differentiation
+    pref = dict(profile.learning_preference.resource_preference)
+    if resource_type:
+        current = pref.get(resource_type, 0.5)
+        boost = 0.08 if completion else 0.03
+        pref[resource_type] = round(min(current + boost, 1.0), 3)
+        # Decay non-engaged types slightly
+        for rt in pref:
+            if rt != resource_type:
+                pref[rt] = round(max(pref[rt] * 0.995, 0.1), 3)
+    new_pref = profile.learning_preference.model_copy(update={"resource_preference": pref})
+
     return profile.model_copy(update={
         "learning_behavior": new_beh,
+        "learning_preference": new_pref,
         "dynamic_update": DynamicUpdate(
             last_updated_at=datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),
             update_source="profile_event",
@@ -327,7 +400,7 @@ def _apply_resource_consumption(profile: StudentProfile, payload: dict, confiden
 
 
 def _apply_conversation_behavior(profile: StudentProfile, payload: dict, confidence: float) -> StudentProfile:
-    """Update learning_behavior and cognitive_profile from conversation signals."""
+    """Update learning_behavior, cognitive_profile, and knowledge_profile from conversation signals."""
     beh = profile.learning_behavior
     engagement = payload.get("engagement_score", 0.5)
 
@@ -354,5 +427,32 @@ def _apply_conversation_behavior(profile: StudentProfile, payload: dict, confide
             updates["cognitive_profile"] = cog.model_copy(update={
                 "abstract_understanding": "high" if cog.abstract_understanding != "high" else cog.abstract_understanding,
             })
+
+    # Handle weak_points_add: add topics to weak_topics
+    weak_points_add = payload.get("weak_points_add", [])
+    if weak_points_add:
+        kp = profile.knowledge_profile
+        existing_weak = list(kp.weak_topics)
+        for topic in weak_points_add:
+            if topic and topic not in existing_weak:
+                existing_weak.append(topic)
+        updates["knowledge_profile"] = kp.model_copy(update={"weak_topics": existing_weak})
+
+    # Handle dimension_boost: boost topic dimensions
+    dimension_boost = payload.get("dimension_boost", {})
+    if dimension_boost:
+        kp = updates.get("knowledge_profile", profile.knowledge_profile)
+        topic_dims = dict(kp.topic_dimensions)
+        for topic, boost_amount in dimension_boost.items():
+            if topic in topic_dims:
+                dim = topic_dims[topic]
+                from app.services.strategy_engine import merge_dimensions
+                boosted = merge_dimensions(
+                    dim,
+                    KnowledgeDimension(mastery="mid", application="mid", memory="mid", understanding="mid"),
+                    confidence=min(boost_amount, 0.5),
+                )
+                topic_dims[topic] = boosted
+        updates["knowledge_profile"] = kp.model_copy(update={"topic_dimensions": topic_dims})
 
     return profile.model_copy(update=updates)

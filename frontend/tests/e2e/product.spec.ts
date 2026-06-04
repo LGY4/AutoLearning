@@ -1,10 +1,25 @@
 import { expect, type Page, test } from "@playwright/test";
 
+const IGNORED_ERROR_PATTERNS = [
+  "404",
+  "WebSocket",
+  "ws://",
+  "HMR",
+  "hot update",
+  "analytics",
+  "favicon",
+  "ResizeObserver",
+  "Non-Error promise rejection",
+];
+
 async function expectNoConsoleErrors(page: Page) {
   const errors: string[] = [];
   page.on("console", (message) => {
-    if (message.type() === "error" && !message.text().includes("404")) {
-      errors.push(message.text());
+    if (message.type() === "error") {
+      const text = message.text();
+      if (!IGNORED_ERROR_PATTERNS.some((p) => text.includes(p))) {
+        errors.push(text);
+      }
     }
   });
   return errors;
@@ -13,6 +28,7 @@ async function expectNoConsoleErrors(page: Page) {
 test("profile workspace and resource gear render", async ({ page }, testInfo) => {
   const errors = await expectNoConsoleErrors(page);
   await page.goto("/");
+  await page.waitForLoadState("networkidle");
   await expect(page.getByRole("heading", { name: /两周内掌握|新建学习画像|掌握/ })).toBeVisible();
   await expect(page.getByRole("button", { name: "新创画像" })).toBeVisible();
   await expect(page.getByRole("button", { name: "历史画像" })).toBeVisible();

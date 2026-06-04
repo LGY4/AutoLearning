@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { Button, message } from "antd";
-import { BookOpen, ChevronDown, ChevronRight, Compass, Film, GitBranch, GraduationCap, History, Library, LogOut, Map as MapIcon, MoreHorizontal, Pen, PenTool, Pencil, Plus, Route, Trash2, TrendingUp, User, Wand2 } from "lucide-react";
+import { BookOpen, ChevronDown, ChevronRight, Film, GitBranch, GraduationCap, History, Library, LogOut, Map as MapIcon, MoreHorizontal, Pen, PenTool, Pencil, Plus, Trash2, TrendingUp, User, Wand2 } from "lucide-react";
 import { useAppContext } from "../../context/AppContext";
 import { apiPatch, apiDelete, clearAccessToken } from "../../api/client";
 import type { ConversationSession } from "../../types/baseline";
@@ -11,9 +11,22 @@ interface Props {
   onLoadHistory: () => void;
   onLoadConversation: (id: string, conversationType?: string) => void;
   onNavigate?: (path: string) => void;
+  onSendMessage?: (message: string) => void;
   activePath?: string;
   mobileOpen?: boolean;
 }
+
+// When on /chat, clicking these items sends a chat message instead of navigating
+const NAV_CHAT_MESSAGES: Record<string, string> = {
+  "/practice": "帮我出几道练习题",
+  "/map": "展示学习地图",
+  "/video-studio": "帮我生成一个教学视频",
+  "/media-studio": "帮我生成一个动画",
+  "/dashboard": "看看我的学习情况",
+  "/resources": "浏览我的资源",
+  "/courses": "查看学习目标",
+  "/analytics": "看看我的学习分析",
+};
 
 // ── Time grouping ────────────────────────────────────────────────────────
 
@@ -33,6 +46,23 @@ function getTimeGroup(dateStr: string): string {
 }
 
 const TIME_ORDER = ["今天", "昨天", "本周", "更早"];
+
+const LEARN_NAV_ITEMS = [
+  { path: "/chat", label: "AI 学习助手", icon: GraduationCap },
+  { path: "/practice", label: "练习刷题", icon: PenTool },
+  { path: "/map", label: "学习地图", icon: MapIcon },
+];
+
+const CREATE_NAV_ITEMS = [
+  { path: "/video-studio", label: "知识视频", icon: Film },
+  { path: "/media-studio", label: "动画 & 图片", icon: Wand2 },
+];
+
+const REVIEW_NAV_ITEMS = [
+  { path: "/dashboard", label: "学习看板", icon: TrendingUp },
+  { path: "/resources", label: "资源 & 题库", icon: Library },
+  { path: "/courses", label: "课程 & 目标", icon: BookOpen },
+];
 
 // ── Profile grouping ─────────────────────────────────────────────────────
 
@@ -90,9 +120,18 @@ function groupConversations(conversations: ConversationSession[]): TimeGroup[] {
 
 // ── Component ────────────────────────────────────────────────────────────
 
-export function Sidebar({ onAuth, onNewSession, onLoadHistory, onLoadConversation, onNavigate, activePath = "/", mobileOpen }: Props) {
+export function Sidebar({ onAuth, onNewSession, onLoadHistory, onLoadConversation, onNavigate, onSendMessage, activePath = "/", mobileOpen }: Props) {
+
+  const handleNavClick = useCallback((path: string) => {
+    // If on /chat and there's a chat message for this path, send message instead of navigating
+    if (activePath === "/chat" && onSendMessage && NAV_CHAT_MESSAGES[path]) {
+      onSendMessage(NAV_CHAT_MESSAGES[path]);
+      return;
+    }
+    onNavigate?.(path);
+  }, [activePath, onNavigate, onSendMessage]);
   const { state, dispatch } = useAppContext();
-  const { user, conversations, selectedConversationId } = state;
+  const { user, conversations, selectedConversationId, baseAgents, selectedBaseAgentId } = state;
   const hasLogin = Boolean(user);
 
   const [historyExpanded, setHistoryExpanded] = useState(true);
@@ -119,14 +158,14 @@ export function Sidebar({ onAuth, onNewSession, onLoadHistory, onLoadConversatio
       await apiPatch(`/conversations/${convId}`, { title });
       dispatch({
         type: "SET_CONVERSATIONS",
-        payload: conversations.map((c) => c.conversation_id === convId ? { ...c, title } : c),
+        payload: conversationsRef.current.map((c) => c.conversation_id === convId ? { ...c, title } : c),
       });
     } catch {
       message.error("重命名失败");
     }
     setRenamingConvId(null);
     setMenuConvId(null);
-  }, [renameValue, conversations, dispatch]);
+  }, [renameValue, dispatch]);
 
   const handleDelete = useCallback(async (convId: string) => {
     if (!window.confirm("确定删除该对话？删除后不可恢复。")) return;
@@ -134,9 +173,9 @@ export function Sidebar({ onAuth, onNewSession, onLoadHistory, onLoadConversatio
       await apiDelete(`/conversations/${convId}`);
       dispatch({
         type: "SET_CONVERSATIONS",
-        payload: conversations.filter((c) => c.conversation_id !== convId),
+        payload: conversationsRef.current.filter((c) => c.conversation_id !== convId),
       });
-      if (selectedConversationId === convId) {
+      if (selectedConvIdRef.current === convId) {
         dispatch({ type: "SET_SELECTED_CONVERSATION", payload: null });
         dispatch({ type: "SET_ACTIVE_MESSAGES", payload: [] });
       }
@@ -144,9 +183,29 @@ export function Sidebar({ onAuth, onNewSession, onLoadHistory, onLoadConversatio
       message.error("删除失败");
     }
     setMenuConvId(null);
-  }, [conversations, selectedConversationId, dispatch]);
+  }, [dispatch]);
 
+  const [historySearch, setHistorySearch] = useState("");
+  const conversationsRef = useRef(conversations);
+  conversationsRef.current = conversations;
+  const selectedConvIdRef = useRef(selectedConversationId);
+  selectedConvIdRef.current = selectedConversationId;
   const timeGroups = useMemo(() => groupConversations(conversations), [conversations]);
+  const filteredTimeGroups = useMemo(() => {
+    if (!historySearch.trim()) return timeGroups;
+    const q = historySearch.toLowerCase();
+    return timeGroups
+      .map((tg) => ({
+        ...tg,
+        profileGroups: tg.profileGroups
+          .map((pg) => ({
+            ...pg,
+            conversations: pg.conversations.filter((c) => (c.title || "").toLowerCase().includes(q)),
+          }))
+          .filter((pg) => pg.conversations.length > 0),
+      }))
+      .filter((tg) => tg.profileGroups.length > 0);
+  }, [timeGroups, historySearch]);
 
   const toggleProfile = (profileId: string) => {
     setExpandedProfiles((prev) => {
@@ -165,107 +224,76 @@ export function Sidebar({ onAuth, onNewSession, onLoadHistory, onLoadConversatio
 
       <button className="sidebar-action" type="button" onClick={onNewSession}>
         <Plus size={18} />
-        <span>新对话</span>
+        <span>新会话</span>
       </button>
 
-      <button
-        className={`sidebar-action secondary ${activePath === "/chat" ? "active" : ""}`}
-        type="button"
-        onClick={() => onNavigate?.("/chat")}
-      >
-        <GraduationCap size={18} />
-        <span>学习工作区</span>
-      </button>
+      <div className="sidebar-group">
+        <span className="sidebar-group-title">学习</span>
+        {LEARN_NAV_ITEMS.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.path}
+              className={`sidebar-action secondary ${activePath === item.path ? "active" : ""}`}
+              type="button"
+              onClick={() => handleNavClick(item.path)}
+            >
+              <Icon size={18} />
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </div>
 
-      <button
-        className={`sidebar-action secondary ${activePath === "/tutor" ? "active" : ""}`}
-        type="button"
-        onClick={() => onNavigate?.("/tutor")}
-      >
-        <GraduationCap size={18} />
-        <span>问答辅导</span>
-      </button>
+      <div className="sidebar-group">
+        <span className="sidebar-group-title">创作</span>
+        {CREATE_NAV_ITEMS.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.path}
+              className={`sidebar-action secondary ${activePath === item.path ? "active" : ""}`}
+              type="button"
+              onClick={() => handleNavClick(item.path)}
+            >
+              <Icon size={18} />
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </div>
 
-      <button
-        className={`sidebar-action secondary ${activePath === "/video-studio" ? "active" : ""}`}
-        type="button"
-        onClick={() => onNavigate?.("/video-studio")}
-      >
-        <Film size={18} />
-        <span>视频工坊</span>
-      </button>
+      <div className="sidebar-group">
+        <span className="sidebar-group-title">回顾</span>
+        {REVIEW_NAV_ITEMS.map((item) => {
+          const Icon = item.icon;
+          return (
+            <button
+              key={item.path}
+              className={`sidebar-action secondary ${activePath === item.path ? "active" : ""}`}
+              type="button"
+              onClick={() => handleNavClick(item.path)}
+            >
+              <Icon size={18} />
+              <span>{item.label}</span>
+            </button>
+          );
+        })}
+      </div>
 
-      <button
-        className={`sidebar-action secondary ${activePath === "/media-studio" ? "active" : ""}`}
-        type="button"
-        onClick={() => onNavigate?.("/media-studio")}
-      >
-        <Wand2 size={18} />
-        <span>媒体工坊</span>
-      </button>
-
-      <button
-        className={`sidebar-action secondary ${activePath === "/learning-path" ? "active" : ""}`}
-        type="button"
-        onClick={() => onNavigate?.("/learning-path")}
-      >
-        <Route size={18} />
-        <span>学习路径</span>
-      </button>
-
-      <button
-        className={`sidebar-action secondary ${activePath === "/map" ? "active" : ""}`}
-        type="button"
-        onClick={() => onNavigate?.("/map")}
-      >
-        <MapIcon size={18} />
-        <span>学习地图</span>
-      </button>
-
-      <button
-        className={`sidebar-action secondary ${activePath === "/graphs" ? "active" : ""}`}
-        type="button"
-        onClick={() => onNavigate?.("/graphs")}
-      >
-        <GitBranch size={18} />
-        <span>图谱管理</span>
-      </button>
-
-      <button
-        className={`sidebar-action secondary ${activePath === "/practice" ? "active" : ""}`}
-        type="button"
-        onClick={() => onNavigate?.("/practice")}
-      >
-        <PenTool size={18} />
-        <span>练习模式</span>
-      </button>
-
-      <button
-        className={`sidebar-action secondary ${activePath === "/dashboard" ? "active" : ""}`}
-        type="button"
-        onClick={() => onNavigate?.("/dashboard")}
-      >
-        <TrendingUp size={18} />
-        <span>数据看板</span>
-      </button>
-
-      <button
-        className={`sidebar-action secondary ${activePath === "/courses" ? "active" : ""}`}
-        type="button"
-        onClick={() => onNavigate?.("/courses")}
-      >
-        <BookOpen size={18} />
-        <span>课程管理</span>
-      </button>
-
-      <button
-        className={`sidebar-action secondary ${activePath === "/profile-edit" ? "active" : ""}`}
-        type="button"
-        onClick={() => onNavigate?.("/profile-edit")}
-      >
-        <User size={18} />
-        <span>学习画像</span>
-      </button>
+      <div className="sidebar-insight-card">
+        <span className="sidebar-group-title">当前概览</span>
+        <div className="sidebar-insight-grid">
+          <div>
+            <strong>{conversations.length}</strong>
+            <span>会话</span>
+          </div>
+          <div>
+            <strong>{baseAgents.length}</strong>
+            <span>智能体</span>
+          </div>
+        </div>
+      </div>
 
       {/* Collapsible History Section */}
       <div className="sidebar-history">
@@ -283,10 +311,16 @@ export function Sidebar({ onAuth, onNewSession, onLoadHistory, onLoadConversatio
 
         {historyExpanded && (
           <div className="sidebar-history-content">
-            {timeGroups.length === 0 && (
-              <div className="sidebar-history-empty">暂无对话记录</div>
+            <input
+              className="sidebar-history-search"
+              placeholder="搜索对话..."
+              value={historySearch}
+              onChange={(e) => setHistorySearch(e.target.value)}
+            />
+            {filteredTimeGroups.length === 0 && (
+              <div className="sidebar-history-empty">{historySearch ? "无匹配对话" : "暂无对话记录"}</div>
             )}
-            {timeGroups.map((tg) => (
+            {filteredTimeGroups.map((tg) => (
               <div className="history-time-group" key={tg.label}>
                 <span className="history-time-label">{tg.label}</span>
                 {tg.profileGroups.map((pg) => (
@@ -364,14 +398,9 @@ export function Sidebar({ onAuth, onNewSession, onLoadHistory, onLoadConversatio
         )}
       </div>
 
-      <button
-        className={`sidebar-action secondary ${activePath === "/resources" ? "active" : ""}`}
-        type="button"
-        onClick={() => onNavigate?.("/resources")}
-      >
-        <Library size={18} />
-        <span>资源库</span>
-      </button>
+      <div className="sidebar-agent-info">
+        <span>{baseAgents.find((a) => a.agent_id === selectedBaseAgentId)?.name ?? "系统默认基座智能体"}</span>
+      </div>
 
       <div className="sidebar-user">
         {hasLogin ? (

@@ -34,6 +34,23 @@ def friendly_message(code: ErrorCode) -> str:
     return _FRIENDLY_MESSAGES.get(code, "发生未知错误，请稍后重试")
 
 
+def error_http_status(code: ErrorCode) -> int:
+    """Map ErrorCode to appropriate HTTP status code."""
+    _STATUS_MAP: dict[ErrorCode, int] = {
+        ErrorCode.LLM_TIMEOUT: 504,
+        ErrorCode.LLM_RATE_LIMITED: 429,
+        ErrorCode.LLM_AUTH_FAILED: 502,
+        ErrorCode.LLM_CIRCUIT_OPEN: 503,
+        ErrorCode.LLM_GENERATION_FAILED: 502,
+        ErrorCode.KNOWLEDGE_BASE_EMPTY: 424,
+        ErrorCode.RESOURCE_GENERATION_FAILED: 500,
+        ErrorCode.PROFILE_NOT_FOUND: 404,
+        ErrorCode.GRADING_FAILED: 500,
+        ErrorCode.INTERNAL_ERROR: 500,
+    }
+    return _STATUS_MAP.get(code, 500)
+
+
 class ServiceError(Exception):
     def __init__(self, code: ErrorCode, detail: str | None = None):
         self.code = code

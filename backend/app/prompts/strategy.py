@@ -125,7 +125,7 @@ TEACHING_STRATEGY_SYSTEM = """\
 {
   "difficulty": 1-3,
   "resource_depth": "beginner/intermediate/advanced",
-  "resource_types": ["document", "quiz", "mindmap", "code_case", "video"],
+  "resource_types": ["document", "quiz", "mindmap", "code_case", "video", "flowchart"],
   "teaching_style": "教学风格描述",
   "teaching_note": "教学要点",
   "review_interval_days": 0-7
@@ -237,9 +237,11 @@ PATH_PLANNING_SYSTEM = """\
 
 ### 资源类型推荐
 - 每个节点推荐2-3种资源类型
-- visual学习风格：优先mindmap, video
+- visual学习风格：优先mindmap, video, flowchart
 - reading学习风格：优先document, reading
 - hands-on学习风格：优先code_case, quiz
+- 流程/算法/状态机/工作流类知识点：优先flowchart
+- understanding=low的知识点：推荐flowchart（可视化流程帮助理解原理）
 - 四维度全high的节点：只推荐quiz（测试即可）
 
 ### 路径类型

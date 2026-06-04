@@ -27,8 +27,17 @@ def _get_mixin_key(raw: str) -> str:
     return "".join(raw[i] for i in _MIXIN_KEY_ENC_TAB)[:32]
 
 
+_wbi_cache: tuple[str, str] = ("", "")
+_wbi_cache_ts: float = 0
+_WBI_CACHE_TTL = 3600  # 1 hour
+
+
 def _get_wbi_keys() -> tuple[str, str]:
     import logging
+    global _wbi_cache, _wbi_cache_ts
+    now = time.time()
+    if _wbi_cache[0] and now - _wbi_cache_ts < _WBI_CACHE_TTL:
+        return _wbi_cache
     try:
         resp = httpx.get(_WBI_NAV_API, timeout=10)
         data = resp.json().get("data", {})
@@ -36,10 +45,12 @@ def _get_wbi_keys() -> tuple[str, str]:
         sub_url = data.get("wbi_img", {}).get("sub_url", "")
         img_key = img_url.rsplit("/", 1)[-1].split(".")[0] if img_url else ""
         sub_key = sub_url.rsplit("/", 1)[-1].split(".")[0] if sub_url else ""
+        _wbi_cache = (img_key, sub_key)
+        _wbi_cache_ts = now
         return img_key, sub_key
     except Exception as exc:
         logging.getLogger(__name__).warning("Failed to fetch Bilibili WBI keys: %s", exc)
-        return "", ""
+        return _wbi_cache if _wbi_cache[0] else ("", "")
 
 
 def _sign_wbi(params: dict) -> dict:

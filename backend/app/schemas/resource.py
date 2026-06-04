@@ -23,6 +23,7 @@ class LearningResource(BaseModel):
     quality_score: float = 0.0
     status: ResourceStatus = ResourceStatus.PUBLISHED
     metadata: dict = Field(default_factory=dict)
+    created_at: Optional[str] = None
 
 
 class ResourceGenerateRequest(BaseModel):
@@ -30,7 +31,7 @@ class ResourceGenerateRequest(BaseModel):
     subject: str
     knowledge_point: str
     resource_types: List[ResourceType]
-    difficulty: str = "beginner"
+    difficulty: str = "medium"
     base_agent_id: Optional[UUID] = None
 
 

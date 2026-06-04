@@ -52,36 +52,37 @@ def get_teaching_params(dim: KnowledgeDimension) -> dict:
         # 理论强但不会用
         params["quiz_type"] = "case_analysis+code"
         params["tutor_style"] = "多给实际场景和动手练习，少讲概念"
-        params["resource_types"] = ["code_case", "quiz"]
+        params["resource_types"] = ["code_case", "quiz", "video"]
+
+    elif dim.mastery == "low" and dim.understanding == "high":
+        # 没学过但理解力强 — 优先于 memory 判断
+        params["difficulty"] = min(difficulty + 1, 3)
+        params["tutor_style"] = "快速过基础，重点放在应用和进阶"
+        params["resource_types"] = ["document", "quiz", "code_case", "video"]
 
     elif dim.understanding == "high" and dim.memory == "low":
         # 理解好但记不住
         params["quiz_type"] = "mixed_with_review"
         params["tutor_style"] = "用类比和图解帮助记忆，安排间隔复习"
         params["review_interval_days"] = 1
-
-    elif dim.mastery == "low" and dim.understanding == "high":
-        # 没学过但理解力强
-        params["difficulty"] = min(difficulty + 1, 3)
-        params["tutor_style"] = "快速过基础，重点放在应用和进阶"
-        params["resource_types"] = ["document", "quiz", "code_case"]
+        params["resource_types"] = ["mindmap", "animation", "quiz"]
 
     elif dim.mastery == "high" and dim.understanding == "low":
         # 知道概念但不理解原理
         params["tutor_style"] = "多问为什么，要求解释原理，用图解辅助"
         params["quiz_type"] = "short_answer+case_analysis"
-        params["resource_types"] = ["document", "mindmap"]
+        params["resource_types"] = ["document", "mindmap", "flowchart", "video"]
 
     elif score < 0.3:
         # 全面薄弱
         params["tutor_style"] = "从零开始，每步确认理解，多给例子"
-        params["resource_types"] = ["document", "mindmap"]
+        params["resource_types"] = ["document", "mindmap", "flowchart", "video", "reading"]
 
     elif score >= 0.75:
         # 全面优秀
         params["tutor_style"] = "跳过基础，给综合题和进阶挑战"
         params["quiz_type"] = "hard_comprehensive"
-        params["resource_types"] = ["quiz", "code_case"]
+        params["resource_types"] = ["quiz", "code_case", "reading"]
 
     return params
 
@@ -180,26 +181,46 @@ def get_resource_params(
     if learning_style == "visual":
         if "mindmap" not in resource_types:
             resource_types.insert(0, "mindmap")
+        if "flowchart" not in resource_types:
+            resource_types.append("flowchart")
+        if "video" not in resource_types:
+            resource_types.append("video")
     elif learning_style == "hands-on":
         if "code_case" not in resource_types:
             resource_types.insert(0, "code_case")
+        if "video" not in resource_types:
+            resource_types.append("video")
     elif learning_style == "reading":
         if "document" not in resource_types:
             resource_types.insert(0, "document")
+        if "reading" not in resource_types:
+            resource_types.append("reading")
 
     # 四维度修正
     if dim.mastery == "low":
         emphasis = "概念"
+        if "video" not in resource_types:
+            resource_types.append("video")
+        if "reading" not in resource_types:
+            resource_types.append("reading")
     elif dim.application == "low":
         emphasis = "实践"
         if "code_case" not in resource_types:
             resource_types.append("code_case")
+        if "video" not in resource_types:
+            resource_types.append("video")
     elif dim.memory == "low":
         emphasis = "记忆"
         if "mindmap" not in resource_types:
             resource_types.append("mindmap")
+        if "animation" not in resource_types:
+            resource_types.append("animation")
     elif dim.understanding == "low":
         emphasis = "原理"
+        if "flowchart" not in resource_types:
+            resource_types.append("flowchart")
+        if "video" not in resource_types:
+            resource_types.append("video")
 
     difficulty = 1 if score < 0.4 else (2 if score < 0.7 else 3)
 

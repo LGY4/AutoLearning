@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import Response
 from pydantic import BaseModel
 
@@ -29,4 +29,4 @@ def synthesize_speech(
         audio = tts_service.synthesize(payload.text, voice=payload.voice)
         return Response(content=audio, media_type="audio/mpeg")
     except ServiceError as exc:
-        return Response(content=b"", status_code=503, headers={"X-Error": str(exc.detail)})
+        raise HTTPException(status_code=503, detail=str(exc.detail))
