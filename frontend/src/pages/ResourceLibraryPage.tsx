@@ -258,7 +258,7 @@ export function ResourceLibraryPage() {
             {uploadFile ? uploadFile.name : "选择文件"}
             <input
               type="file"
-              accept=".md,.txt,.json,.py,.js,.ts,.java,.c,.cpp,.html,.css,.csv"
+              accept=".md,.txt,.json,.py,.js,.ts,.java,.c,.cpp,.html,.css,.csv,.pdf"
               onChange={(e) => setUploadFile(e.target.files?.[0] ?? null)}
               hidden
             />

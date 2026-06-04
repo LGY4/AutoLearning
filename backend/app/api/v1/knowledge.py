@@ -60,6 +60,66 @@ def status() -> ApiResponse[dict]:
     return success(rag_service.knowledge_status())
 
 
+# ── User Knowledge Base ─────────────────────────────────────────────
+
+@router.post("/upload", response_model=ApiResponse[dict])
+async def upload_to_knowledge_base(
+    title: str,
+    file: UploadFile = File(...),
+    subject: str = "通用",
+    tags: Optional[str] = None,
+    current_user: UserDTO = Depends(get_current_user),
+) -> ApiResponse[dict]:
+    """Upload a document to the user's personal knowledge base.
+
+    The document is chunked, embedded, and stored in ChromaDB for RAG retrieval.
+    """
+    from app.services.document_ingestion import ingest_document
+    from app.services.file_parser import parse_uploaded_file
+
+    content = await file.read()
+    parsed = parse_uploaded_file(file.filename, content)
+    if not parsed.strip():
+        raise HTTPException(status_code=400, detail="文件内容为空")
+
+    tag_list = [t.strip() for t in (tags or "").split(",") if t.strip()]
+    result = ingest_document(
+        user_id=current_user.id,
+        title=title or file.filename or "未命名文档",
+        content=parsed,
+        subject=subject,
+        tags=tag_list,
+        source="user_upload",
+    )
+
+    if result.get("error"):
+        raise HTTPException(status_code=500, detail=result["error"])
+
+    return success(result)
+
+
+@router.get("/my-documents", response_model=ApiResponse[list])
+def list_my_documents(current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[list]:
+    """List all documents in the user's personal knowledge base."""
+    from app.services.document_ingestion import list_user_documents
+    return success(list_user_documents(current_user.id))
+
+
+@router.delete("/my-documents/{title}", response_model=ApiResponse[dict])
+def delete_my_document(title: str, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
+    """Delete a document from the user's personal knowledge base."""
+    from app.services.document_ingestion import delete_user_document
+    deleted = delete_user_document(current_user.id, title)
+    return success({"deleted": deleted, "title": title})
+
+
+@router.get("/my-stats", response_model=ApiResponse[dict])
+def my_knowledge_stats(current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
+    """Get statistics about the user's personal knowledge base."""
+    from app.services.document_ingestion import get_user_knowledge_stats
+    return success(get_user_knowledge_stats(current_user.id))
+
+
 @router.post("/rebuild", response_model=ApiResponse[dict])
 def rebuild(payload: KnowledgeRebuildRequest, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
     _require_admin(current_user)

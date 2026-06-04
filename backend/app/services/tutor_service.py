@@ -148,7 +148,7 @@ def answer_question(
     base_agent = get_base_agent(user_id, base_agent_id)
     subject = profile.learning_goal.target_course if profile and profile.learning_goal.target_course else "通用"
     query = f"{knowledge_point or ''} {question}".strip()
-    references = rag_service.search_knowledge_with_graph(query, subject=subject, top_k=5, profile=profile)
+    references = rag_service.search_knowledge_with_graph(query, subject=subject, top_k=5, profile=profile, user_id=user_id)
     # Merge user-provided RAG context with auto-retrieved references
     if rag_context:
         existing_ids = {r.get("chunk_id") for r in references}
@@ -267,7 +267,7 @@ def answer_question_streaming(
     })
 
     query = f"{kp} {question}".strip()
-    references = rag_service.search_knowledge_with_graph(query, subject=subject, top_k=5, profile=profile)
+    references = rag_service.search_knowledge_with_graph(query, subject=subject, top_k=5, profile=profile, user_id=user_id)
     # Merge user-provided RAG context
     if rag_context:
         existing_ids = {r.get("chunk_id") for r in references}
@@ -664,7 +664,7 @@ def _finalize_quiz(
     base_agent = get_base_agent(user_id, base_agent_id)
     subject = profile.learning_goal.target_course if profile and profile.learning_goal.target_course else "通用"
     query = f"{knowledge_point or ''} {original_question}".strip()
-    references = rag_service.search_knowledge_with_graph(query, subject=subject, top_k=5, profile=profile)
+    references = rag_service.search_knowledge_with_graph(query, subject=subject, top_k=5, profile=profile, user_id=user_id)
     draft = agent_runtime.build_tutor_answer(
         profile=profile,
         question=original_question,

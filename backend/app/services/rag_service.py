@@ -351,27 +351,55 @@ def _apply_profile_boost(results: List[dict], profile) -> List[dict]:
     return results
 
 
-def search_knowledge(query: str, subject: Optional[str] = None, top_k: int = 5, profile=None) -> List[dict]:
-    if get_settings().rag_backend == "memory":
-        results = _memory_search(query, subject, top_k)
-    else:
-        chroma_results = _chroma_search(query, subject, top_k)
-        results = chroma_results if chroma_results is not None else _memory_search(query, subject, top_k)
+def search_knowledge(query: str, subject: Optional[str] = None, top_k: int = 5, profile=None, user_id=None) -> List[dict]:
+    """Search knowledge base. If user_id provided, search user's KB first, then system KB."""
+    results: List[dict] = []
+
+    # 1. Search user's personal knowledge base first (higher priority)
+    if user_id:
+        try:
+            from app.services.document_ingestion import search_user_knowledge
+            user_results = search_user_knowledge(user_id, query, top_k=top_k)
+            if user_results:
+                for r in user_results:
+                    r["score"] = min(0.99, r.get("score", 0) + 0.1)  # boost user docs
+                results.extend(user_results)
+        except Exception:
+            pass
+
+    # 2. Search system knowledge base
+    remaining = top_k - len(results)
+    if remaining > 0:
+        if get_settings().rag_backend == "memory":
+            system_results = _memory_search(query, subject, remaining)
+        else:
+            chroma_results = _chroma_search(query, subject, remaining)
+            system_results = chroma_results if chroma_results is not None else _memory_search(query, subject, remaining)
+        results.extend(system_results)
 
     if profile is not None:
         results = _apply_profile_boost(results, profile)
 
-    return results
+    # Deduplicate and sort
+    seen: set = set()
+    deduped: List[dict] = []
+    for r in results:
+        cid = r.get("chunk_id", "")
+        if cid not in seen:
+            seen.add(cid)
+            deduped.append(r)
+    deduped.sort(key=lambda x: x.get("score", 0), reverse=True)
+    return deduped[:top_k]
 
 
-def search_knowledge_with_graph(query: str, subject: Optional[str] = None, top_k: int = 5, profile=None) -> List[dict]:
+def search_knowledge_with_graph(query: str, subject: Optional[str] = None, top_k: int = 5, profile=None, user_id=None) -> List[dict]:
     """Search knowledge with graph-aware context expansion.
 
     After initial RAG retrieval, finds which knowledge graph nodes contain
     the matched chunks and adds sibling chunks from the same node for
     broader context.
     """
-    initial = search_knowledge(query, subject, top_k, profile=profile)
+    initial = search_knowledge(query, subject, top_k, profile=profile, user_id=user_id)
     if not initial:
         return initial
 

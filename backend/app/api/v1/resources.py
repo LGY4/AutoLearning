@@ -84,6 +84,14 @@ def upload_resource(
     raw = file.file.read()
     if len(raw) > 10 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="文件大小不能超过10MB")
+
+    # Try to parse as text for RAG ingestion
+    try:
+        from app.services.file_parser import parse_uploaded_file
+        parsed_content = parse_uploaded_file(file.filename, raw)
+    except Exception:
+        parsed_content = raw.decode("utf-8", errors="replace")
+
     content = raw.decode("utf-8", errors="replace")
     resource = resource_service.create_user_resource(
         user_id=current_user.id,
@@ -92,6 +100,21 @@ def upload_resource(
         resource_type=resource_type,
         filename=file.filename or "upload",
     )
+
+    # Ingest into user's RAG knowledge base
+    if parsed_content and parsed_content.strip():
+        try:
+            from app.services.document_ingestion import ingest_document
+            ingest_document(
+                user_id=current_user.id,
+                title=title,
+                content=parsed_content,
+                subject=resource_type,
+                source="resource_upload",
+            )
+        except Exception:
+            pass  # non-blocking
+
     return success({"resource_id": str(resource.resource_id), "title": resource.title})
 
 
