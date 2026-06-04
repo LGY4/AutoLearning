@@ -5,7 +5,7 @@ from typing import List, Optional
 from datetime import date, datetime
 from uuid import uuid4
 
-from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, Integer, Numeric, String, Text, UniqueConstraint, func
+from sqlalchemy import Boolean, Column, Date, DateTime, ForeignKey, Index, Integer, Numeric, String, Text, UniqueConstraint, func
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import relationship
 
@@ -51,6 +51,9 @@ class BaseAgentModel(Base):
 
 class StudentProfileModel(Base):
     __tablename__ = "student_profile"
+    __table_args__ = (
+        Index("ix_student_profile_user_version", "user_id", "profile_version"),
+    )
 
     id = uuid_pk()
     user_id = Column(UUID(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -154,6 +157,9 @@ class LearningResourceModel(Base):
 
 class ResourceVersion(Base):
     __tablename__ = "resource_version"
+    __table_args__ = (
+        UniqueConstraint("resource_id", "version_no", name="uq_resource_version"),
+    )
 
     id = uuid_pk()
     resource_id = Column(UUID(as_uuid=True), ForeignKey("learning_resource.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -170,6 +176,9 @@ class ResourceVersion(Base):
 
 class LearningPathModel(Base):
     __tablename__ = "learning_path"
+    __table_args__ = (
+        Index("ix_learning_path_user_updated", "user_id", "updated_at"),
+    )
 
     id = uuid_pk()
     user_id = Column(UUID(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -187,6 +196,9 @@ class LearningPathModel(Base):
 
 class LearningPathNodeModel(Base):
     __tablename__ = "learning_path_node"
+    __table_args__ = (
+        UniqueConstraint("path_id", "node_order", name="uq_path_node_order"),
+    )
 
     id = uuid_pk()
     path_id = Column(UUID(as_uuid=True), ForeignKey("learning_path.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -266,7 +278,7 @@ class LearningRecordModel(Base):
     path_id = Column(UUID(as_uuid=True), ForeignKey("learning_path.id", ondelete="SET NULL"), index=True)
     resource_id = Column(UUID(as_uuid=True), ForeignKey("learning_resource.id", ondelete="SET NULL"), index=True)
     knowledge_point = Column(String(255))
-    resource_type = Column(String(50))
+    resource_type = Column(String(64))
     score = Column(Integer)
     duration_seconds = Column(Integer, default=0)
     wrong_points = Column(JSONB)
@@ -276,6 +288,9 @@ class LearningRecordModel(Base):
 
 class RecommendationRecord(Base):
     __tablename__ = "recommendation_record"
+    __table_args__ = (
+        Index("ix_recommendation_user_completed", "user_id", "completed"),
+    )
 
     id = uuid_pk()
     user_id = Column(UUID(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -329,7 +344,7 @@ class KnowledgeGraphModel(Base):
 
     id = uuid_pk()
     graph_id = Column(String(128), unique=True, nullable=False, index=True)
-    course_id = Column(String(128), nullable=False, index=True)
+    course_id = Column(String(128), nullable=False, index=True)  # Kept as String for backward compat
     course_name = Column(String(255), nullable=False)
     version = Column(Integer, nullable=False, default=1)
     review_status = Column(String(32), nullable=False, default="draft", index=True)
@@ -374,6 +389,9 @@ class ConversationMessageModel(Base):
 
 class QuestionModel(Base):
     __tablename__ = "question"
+    __table_args__ = (
+        Index("ix_question_status_kp", "status", "knowledge_point"),
+    )
 
     id = uuid_pk()
     knowledge_point = Column(String(255), nullable=False, index=True)
@@ -385,12 +403,15 @@ class QuestionModel(Base):
     difficulty_level = Column(String(32), default="medium")
     subject = Column(String(128), default="")
     tags = Column(JSONB, default=list)
-    status = Column(String(32), default="active")
+    status = Column(String(32), default="active", index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
 
 
 class AnswerRecordModel(Base):
     __tablename__ = "answer_record"
+    __table_args__ = (
+        Index("ix_answer_record_user_question", "user_id", "question_id"),
+    )
 
     id = uuid_pk()
     user_id = Column(UUID(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False, index=True)
@@ -406,6 +427,10 @@ class AnswerRecordModel(Base):
 
 class ProfileEventModel(Base):
     __tablename__ = "profile_event"
+    __table_args__ = (
+        Index("ix_profile_event_user_status", "user_id", "status"),
+        Index("ix_profile_event_user_type", "user_id", "event_type"),
+    )
 
     id = uuid_pk()
     user_id = Column(UUID(as_uuid=True), ForeignKey("app_user.id", ondelete="CASCADE"), nullable=False, index=True)
