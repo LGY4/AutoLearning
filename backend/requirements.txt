@@ -16,6 +16,13 @@ edge-tts>=6.1.0,<7.0.0
 Pillow>=10.0.0,<11.0.0
 manim>=0.18.0,<1.0.0
 
+# Document processing
+docling>=2.90.0,<3.0.0
+python-pptx>=1.0.0,<2.0.0
+python-docx>=1.1.0,<2.0.0
+openpyxl>=3.1.0,<4.0.0
+PyPDF2>=3.0.0,<4.0.0
+
 # Testing
 pytest>=8.0.0,<9.0.0
 pytest-asyncio>=0.24.0,<1.0.0

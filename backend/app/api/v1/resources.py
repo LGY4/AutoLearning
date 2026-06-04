@@ -243,6 +243,36 @@ def get_answer_history(question_id: Optional[UUID] = None, current_user: UserDTO
     return success(resource_library.get_user_answer_history(current_user.id, question_id))
 
 
+# ── PPT Generation ─────────────────────────────────────────────────
+
+
+class PPTGenerateRequest(BaseModel):
+    knowledge_point: str
+    subject: str = "通用"
+    difficulty: str = "medium"
+
+
+@router.post("/generate-ppt")
+def generate_ppt(req: PPTGenerateRequest, current_user: UserDTO = Depends(get_current_user)):
+    """Generate a learning presentation for a knowledge point."""
+    from app.services.ppt_service import generate_ppt_from_llm
+    from fastapi.responses import Response
+
+    try:
+        ppt_bytes = generate_ppt_from_llm(
+            knowledge_point=req.knowledge_point,
+            subject=req.subject,
+            difficulty=req.difficulty,
+        )
+        return Response(
+            content=ppt_bytes,
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            headers={"Content-Disposition": f'attachment; filename="{req.knowledge_point}.pptx"'},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"PPT generation failed: {exc}")
+
+
 # ── Resource by ID (must be last — catch-all path param) ──────────
 
 

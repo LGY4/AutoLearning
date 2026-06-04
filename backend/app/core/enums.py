@@ -12,6 +12,7 @@ class ResourceType(str, Enum):
     ANIMATION = "animation"
     CODE_CASE = "code_case"
     FLOWCHART = "flowchart"
+    PPT = "ppt"
 
 
 class AgentName(str, Enum):
