@@ -760,8 +760,8 @@ def generate_stream(prompt: str, model_override: Optional[ModelOverride] = None)
     for attempt in range(_MAX_HTTP_RETRIES + 1):
         yielded_any = False
         try:
-            with httpx.Client(timeout=cfg["timeout"]) as client:
-                with client.stream("POST", url, json=payload, headers=headers) as response:
+            client = _get_http_client(cfg["timeout"])
+            with client.stream("POST", url, json=payload, headers=headers) as response:
                     if response.status_code in _TRANSIENT_STATUS_CODES and attempt < _MAX_HTTP_RETRIES:
                         retry_after = response.headers.get("retry-after")
                         time.sleep(float(retry_after) if retry_after else _BASE_DELAY * (2 ** attempt))
@@ -830,8 +830,8 @@ def generate_stream_with_system(system_prompt: str, user_prompt: str, model_over
     for attempt in range(_MAX_HTTP_RETRIES + 1):
         yielded_any = False
         try:
-            with httpx.Client(timeout=cfg["timeout"]) as client:
-                with client.stream("POST", url, json=payload, headers=headers) as response:
+            client = _get_http_client(cfg["timeout"])
+            with client.stream("POST", url, json=payload, headers=headers) as response:
                     if response.status_code in _TRANSIENT_STATUS_CODES and attempt < _MAX_HTTP_RETRIES:
                         retry_after = response.headers.get("retry-after")
                         time.sleep(float(retry_after) if retry_after else _BASE_DELAY * (2 ** attempt))

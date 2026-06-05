@@ -33,7 +33,7 @@ class Settings(BaseSettings):
     llm_temperature: float = 0.4
     llm_timeout_seconds: int = 120
     # LangGraph runtime
-    langgraph_max_workers: int = 1
+    langgraph_max_workers: int = 4
     langgraph_timeout_seconds: int = 300
     # Embedding - local sentence-transformers (BGE-small-zh)
     embedding_provider: str = "local"

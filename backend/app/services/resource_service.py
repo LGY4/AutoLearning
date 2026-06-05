@@ -59,6 +59,8 @@ def generate_resources(
     request: ResourceGenerateRequest,
     emit_progress: Optional[Callable[[dict], None]] = None,
 ) -> ResourceGenerateResponse:
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     def emit(payload: dict) -> None:
         if emit_progress is not None:
             emit_progress(payload)
@@ -73,19 +75,12 @@ def generate_resources(
         },
         emit_progress=emit_progress,
     )
-    resources = []
+
     total = len(request.resource_types)
-    for idx, resource_type in enumerate(request.resource_types):
-        pct = int(20 + 60 * (idx / max(total, 1)))
-        emit(
-            {
-                "agent_name": resource_type.value,
-                "stage": "resource_generate",
-                "status": "running",
-                "progress": pct,
-                "hint": f"{resource_type.value} agent 正在生成（{idx + 1}/{total}）...",
-            }
-        )
+    resources: List[LearningResource] = [None] * total  # type: ignore
+
+    def _generate_one(idx: int, resource_type):
+        """Generate a single resource (runs in thread pool)."""
         try:
             resource = repository.create_resource(
                 user_id=request.user_id,
@@ -94,6 +89,7 @@ def generate_resources(
                 difficulty=request.difficulty,
                 base_agent_id=request.base_agent_id,
             )
+            return idx, resource_type, resource
         except Exception as exc:
             logger.error("Resource generation failed for %s: %s", resource_type.value, exc)
             resource = LearningResource(
@@ -110,34 +106,53 @@ def generate_resources(
                 status=ResourceStatus.FAILED,
                 metadata={"error": str(exc)},
             )
-        is_failed = getattr(resource, "status", None) == ResourceStatus.FAILED
-        emit(
-            {
+            return idx, resource_type, resource
+
+    # Parallel generation with ThreadPoolExecutor
+    max_workers = min(total, 4)  # Up to 4 concurrent generations
+    emit({
+        "agent_name": "resource_planner",
+        "stage": "resource_generate",
+        "status": "running",
+        "progress": 20,
+        "hint": f"并行生成 {total} 种资源（{max_workers} 线程）...",
+    })
+
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {
+            executor.submit(_generate_one, idx, rt): (idx, rt)
+            for idx, rt in enumerate(request.resource_types)
+        }
+        completed = 0
+        for future in as_completed(futures):
+            idx, resource_type, resource = future.result()
+            resources[idx] = resource
+            completed += 1
+            pct = int(20 + 60 * (completed / max(total, 1)))
+            is_failed = getattr(resource, "status", None) == ResourceStatus.FAILED
+            emit({
                 "agent_name": resource_type.value,
                 "stage": "resource_generate",
                 "status": "error" if is_failed else "done",
-                "progress": pct + int(60 / max(total, 1)),
-                "hint": f"{resource_type.value} 生成失败。" if is_failed else f"{resource_type.value} 已生成完成。",
+                "progress": pct,
+                "hint": f"{resource_type.value} 生成失败。" if is_failed else f"{resource_type.value} 已生成完成（{completed}/{total}）。",
                 "data": {"resource": resource.model_dump(mode="json")},
-            }
-        )
-        resources.append(resource)
+            })
+
     repository.create_recommendations(request.user_id)
-    emit(
-        {
-            "agent_name": "recommendation_agent",
-            "stage": "recommendation_generate",
-            "status": "done",
-            "progress": 100,
-            "hint": "推荐 Agent 已完成资源排序与推送。",
-        }
-    )
+    emit({
+        "agent_name": "recommendation_agent",
+        "stage": "recommendation_generate",
+        "status": "done",
+        "progress": 100,
+        "hint": "推荐 Agent 已完成资源排序与推送。",
+    })
     first_task_id = workflow.tasks[0].task_id if workflow.tasks else str(uuid4())
     return ResourceGenerateResponse(
         workflow_id=workflow.workflow_id,
         task_id=first_task_id,
         status=workflow.status,
-        resources=resources,
+        resources=[r for r in resources if r is not None],
     )
 
 

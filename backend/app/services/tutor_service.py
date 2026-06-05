@@ -223,20 +223,30 @@ def answer_question_streaming(
         str tokens during thinking phase
         dict with structured result at the end
     """
+    from concurrent.futures import ThreadPoolExecutor
     from app.services.model_gateway import generate_stream_with_system
 
-    profile = profile_service.get_profile(user_id, conversation_id=conversation_id)
-    base_agent = get_base_agent(user_id, base_agent_id)
-    subject = profile.learning_goal.target_course if profile and profile.learning_goal.target_course else "通用"
     kp = knowledge_point or question[:30]
-
     from app.services import conversation_service
 
-    # Load conversation history BEFORE persisting current message (avoid duplicate in prompt)
+    # Parallel: load profile, base_agent, and conversation history concurrently
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        fut_profile = pool.submit(profile_service.get_profile, user_id, conversation_id)
+        fut_agent = pool.submit(get_base_agent, user_id, base_agent_id)
+        fut_history = None
+        if conversation_id:
+            fut_history = pool.submit(conversation_service.get_conversation, conversation_id)
+
+        profile = fut_profile.result()
+        base_agent = fut_agent.result()
+
+    subject = profile.learning_goal.target_course if profile and profile.learning_goal.target_course else "通用"
+
+    # Load conversation history BEFORE persisting current message
     history_text = ""
-    if conversation_id:
+    if fut_history:
         try:
-            conv = conversation_service.get_conversation(conversation_id)
+            conv = fut_history.result()
             if conv and hasattr(conv, "messages"):
                 recent = conv.messages[-6:]
                 history_lines = [f"{'学生' if m.role == 'user' else 'AI导师'}: {m.content[:200]}" for m in recent]
@@ -254,20 +264,19 @@ def answer_question_streaming(
     )
     actual_conversation_id = session.conversation_id
 
-    # Build context with strategy engine
-    from app.services.agent_runtime import _get_teaching_context, _format_strategy_params
-    teach_ctx = _get_teaching_context(profile, kp)
-    topic_dim = teach_ctx["topic_dimension"]
-    overall_level = teach_ctx["overall_level"]
-    style = teach_ctx["learning_style"]
-    teaching_params = teach_ctx["teaching_params"]
-    strategy_instructions = _format_strategy_params(teaching_params, {
-        "learning_style": style,
-        "topic_dimension": topic_dim,
-    })
-
+    # Parallel: RAG search + resource context + strategy engine
     query = f"{kp} {question}".strip()
-    references = rag_service.search_knowledge_with_graph(query, subject=subject, top_k=5, profile=profile, user_id=user_id)
+    with ThreadPoolExecutor(max_workers=3) as pool:
+        fut_rag = pool.submit(rag_service.search_knowledge_with_graph, query, subject, 5, profile, user_id)
+        fut_res_ctx = pool.submit(_build_resource_context, user_id, kp, subject)
+
+        from app.services.agent_runtime import _get_teaching_context, _format_strategy_params
+        fut_teach = pool.submit(_get_teaching_context, profile, kp)
+
+        references = fut_rag.result()
+        resource_context = fut_res_ctx.result()
+        teach_ctx = fut_teach.result()
+
     # Merge user-provided RAG context
     if rag_context:
         existing_ids = {r.get("chunk_id") for r in references}
@@ -277,8 +286,14 @@ def answer_question_streaming(
                 references.append(ctx)
     refs_text = "\n".join(f"- {r.get('title', '')}: {r.get('content', '')[:200]}" for r in references) if references else "无参考内容"
 
-    # Resource context: list student's existing resources for this topic
-    resource_context = _build_resource_context(user_id, kp, subject)
+    topic_dim = teach_ctx["topic_dimension"]
+    overall_level = teach_ctx["overall_level"]
+    style = teach_ctx["learning_style"]
+    teaching_params = teach_ctx["teaching_params"]
+    strategy_instructions = _format_strategy_params(teaching_params, {
+        "learning_style": style,
+        "topic_dimension": topic_dim,
+    })
 
     from app.services.prompt_utils import build_prompt
     from app.services.agent_runtime import _apply_base_agent_prompt
@@ -311,7 +326,7 @@ def answer_question_streaming(
     # After streaming, generate structured metadata
     complete_text = "".join(full_response)
 
-    # Persist assistant response
+    # Persist assistant response (must complete before yielding result)
     conversation_service.append_message(
         user_id=user_id,
         role="assistant",
@@ -331,49 +346,64 @@ def answer_question_streaming(
         },
     )
 
-    # Emit conversation behavior event to update profile
-    # Analyze question depth from the user's question to estimate engagement
-    question_depth = _estimate_question_depth(question)
-    try:
-        from app.services.profile_event_service import ProfileEventType, emit_event
-        emit_event(
-            user_id,
-            ProfileEventType.CONVERSATION_BEHAVIOR,
-            {
-                "knowledge_point": kp,
-                "engagement_score": question_depth["engagement"],
-                "question_types": question_depth["types"],
-                "response_length": len(complete_text),
-            },
-            confidence=0.5,
-        )
-    except Exception:
-        logger.warning("Failed to emit conversation behavior event for kp=%s", kp, exc_info=True)
-
-    # Extract conversation signals and update profile (fire-and-forget)
-    try:
-        from app.services.conversation_signal_service import extract_and_apply_signals
-        extract_and_apply_signals(user_id, question, complete_text, kp, profile)
-    except Exception:
-        logger.debug("Conversation signal extraction failed for kp=%s", kp, exc_info=True)
-
-    # Trigger adaptive update + strategic resource generation after tutor answer
-    try:
-        from app.services import adaptive_service
-        adaptive_service.post_learning_update(
-            user_id=user_id,
-            knowledge_point=kp,
-            conversation_context=question + "\n" + complete_text[:500],
-            conversation_id=actual_conversation_id,
-        )
-    except Exception:
-        logger.debug("Post-learning resource generation failed for kp=%s", kp, exc_info=True)
-
+    # Parallel: all post-streaming operations are independent
     videos = []
-    try:
-        videos = search_and_summarize(kp, top_k=3)
-    except Exception:
-        logger.warning("Bilibili search failed for '%s'", kp, exc_info=True)
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        # Emit conversation behavior event
+        def _emit_event():
+            try:
+                question_depth = _estimate_question_depth(question)
+                from app.services.profile_event_service import ProfileEventType, emit_event
+                emit_event(
+                    user_id,
+                    ProfileEventType.CONVERSATION_BEHAVIOR,
+                    {
+                        "knowledge_point": kp,
+                        "engagement_score": question_depth["engagement"],
+                        "question_types": question_depth["types"],
+                        "response_length": len(complete_text),
+                    },
+                    confidence=0.5,
+                )
+            except Exception:
+                logger.warning("Failed to emit conversation behavior event for kp=%s", kp, exc_info=True)
+
+        # Extract conversation signals
+        def _extract_signals():
+            try:
+                from app.services.conversation_signal_service import extract_and_apply_signals
+                extract_and_apply_signals(user_id, question, complete_text, kp, profile)
+            except Exception:
+                logger.debug("Conversation signal extraction failed for kp=%s", kp, exc_info=True)
+
+        # Adaptive update + resource generation
+        def _adaptive_update():
+            try:
+                from app.services import adaptive_service
+                adaptive_service.post_learning_update(
+                    user_id=user_id,
+                    knowledge_point=kp,
+                    conversation_context=question + "\n" + complete_text[:500],
+                    conversation_id=actual_conversation_id,
+                )
+            except Exception:
+                logger.debug("Post-learning resource generation failed for kp=%s", kp, exc_info=True)
+
+        # Bilibili video search
+        def _search_videos():
+            try:
+                return search_and_summarize(kp, top_k=3)
+            except Exception:
+                logger.warning("Bilibili search failed for '%s'", kp, exc_info=True)
+                return []
+
+        pool.submit(_emit_event)
+        pool.submit(_extract_signals)
+        pool.submit(_adaptive_update)
+        videos_future = pool.submit(_search_videos)
+
+        # Wait for all to complete (pool context manager does this)
+        videos = videos_future.result()
 
     yield {
         "user_id": str(user_id),
