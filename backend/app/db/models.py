@@ -98,6 +98,7 @@ class LearningGoal(Base):
     deadline = Column(Date)
     status = Column(String(32), default="active")
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class Course(Base):
@@ -120,6 +121,8 @@ class Chapter(Base):
     chapter_name = Column(String(128), nullable=False)
     chapter_order = Column(Integer, nullable=False)
     description = Column(Text)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
 
 
 class KnowledgePoint(Base):
@@ -153,6 +156,7 @@ class LearningResourceModel(Base):
     quality_score = Column(Numeric(3, 2))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    deleted_at = Column(DateTime(timezone=True), nullable=True, index=True)
 
 
 class ResourceVersion(Base):
@@ -190,6 +194,7 @@ class LearningPathModel(Base):
     generated_by_agent_id = Column(UUID(as_uuid=True))
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now())
+    deleted_at = Column(DateTime(timezone=True), nullable=True, index=True)
 
     nodes = relationship("LearningPathNodeModel", back_populates="path", cascade="all, delete-orphan")
 
@@ -405,6 +410,7 @@ class QuestionModel(Base):
     tags = Column(JSONB, default=list)
     status = Column(String(32), default="active", index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
+    deleted_at = Column(DateTime(timezone=True), nullable=True, index=True)
 
 
 class AnswerRecordModel(Base):

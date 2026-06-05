@@ -621,7 +621,7 @@ class PostgresVerticalLoopRepository:
         with SessionLocal() as db:
             row = db.scalar(
                 select(LearningPathModel)
-                .where(LearningPathModel.user_id == user_id)
+                .where(LearningPathModel.user_id == user_id, LearningPathModel.deleted_at.is_(None))
                 .order_by(desc(LearningPathModel.updated_at))
                 .limit(1)
             )
@@ -656,14 +656,16 @@ class PostgresVerticalLoopRepository:
             return paths, total
 
     def delete_path(self, path_id: UUID, user_id: UUID) -> bool:
+        from datetime import datetime, timezone
         with _safe_session() as db:
             row = db.scalar(
                 select(LearningPathModel)
-                .where(LearningPathModel.id == path_id, LearningPathModel.user_id == user_id)
+                .where(LearningPathModel.id == path_id, LearningPathModel.user_id == user_id, LearningPathModel.deleted_at.is_(None))
             )
             if not row:
                 return False
-            db.delete(row)
+            row.deleted_at = datetime.now(timezone.utc)
+            row.status = "deleted"
             return True
 
     def complete_path_node(self, user_id: UUID, node_id: UUID) -> Optional[LearningPath]:
@@ -708,6 +710,17 @@ class PostgresVerticalLoopRepository:
 
             new_path = path.model_copy(update={"nodes": updated_nodes})
             row.strategy = {"path_payload": new_path.model_dump(mode="json"), **new_path.strategy}
+
+            # Sync learning_path_node table rows
+            node_rows = db.scalars(
+                select(LearningPathNodeModel).where(LearningPathNodeModel.path_id == row.id)
+            ).all()
+            node_status_map = {n.knowledge_point: n.status.value if hasattr(n.status, "value") else str(n.status) for n in updated_nodes}
+            for nr in node_rows:
+                kp_name = nr.unlock_condition.get("knowledge_point", "") if nr.unlock_condition else ""
+                if kp_name in node_status_map:
+                    nr.node_status = node_status_map[kp_name]
+
         return new_path
 
     def start_learning_node(self, user_id: UUID, knowledge_point: str) -> Optional[LearningPath]:
@@ -739,6 +752,17 @@ class PostgresVerticalLoopRepository:
 
             new_path = path.model_copy(update={"nodes": updated_nodes})
             row.strategy = {"path_payload": new_path.model_dump(mode="json"), **new_path.strategy}
+
+            # Sync learning_path_node table rows
+            node_rows = db.scalars(
+                select(LearningPathNodeModel).where(LearningPathNodeModel.path_id == row.id)
+            ).all()
+            node_status_map = {n.knowledge_point: n.status.value if hasattr(n.status, "value") else str(n.status) for n in updated_nodes}
+            for nr in node_rows:
+                kp_name = nr.unlock_condition.get("knowledge_point", "") if nr.unlock_condition else ""
+                if kp_name in node_status_map:
+                    nr.node_status = node_status_map[kp_name]
+
         return new_path
 
     def create_workflow(self, user_id: UUID, input_payload: Optional[dict] = None, emit_progress=None) -> AgentWorkflow:
@@ -1039,12 +1063,13 @@ class PostgresVerticalLoopRepository:
             db.flush()
             return db_record.id
 
-    def list_learning_records(self, user_id: UUID) -> List[dict]:
+    def list_learning_records(self, user_id: UUID, limit: int = 500) -> List[dict]:
         with SessionLocal() as db:
             rows = db.scalars(
                 select(LearningRecordModel)
                 .where(LearningRecordModel.user_id == user_id)
                 .order_by(desc(LearningRecordModel.created_at))
+                .limit(limit)
             ).all()
             return [
                 {
@@ -1060,7 +1085,7 @@ class PostgresVerticalLoopRepository:
                 for row in rows
             ]
 
-    def list_questions(self, knowledge_point: Optional[str] = None, question_type: Optional[str] = None, subject: Optional[str] = None, difficulty: Optional[str] = None) -> List[dict]:
+    def list_questions(self, knowledge_point: Optional[str] = None, question_type: Optional[str] = None, subject: Optional[str] = None, difficulty: Optional[str] = None, limit: int = 100) -> List[dict]:
         from app.db.models import QuestionModel
         with SessionLocal() as db:
             q = select(QuestionModel).where(QuestionModel.status == "active")
@@ -1072,7 +1097,7 @@ class PostgresVerticalLoopRepository:
                 q = q.where(QuestionModel.subject == subject)
             if difficulty:
                 q = q.where(QuestionModel.difficulty_level == difficulty)
-            rows = db.scalars(q.order_by(desc(QuestionModel.created_at))).all()
+            rows = db.scalars(q.order_by(desc(QuestionModel.created_at)).limit(limit)).all()
             return [
                 {
                     "id": str(row.id),
@@ -1126,11 +1151,13 @@ class PostgresVerticalLoopRepository:
             return {"id": str(q.id), "status": "created"}
 
     def delete_question(self, question_id: UUID) -> bool:
+        from datetime import datetime, timezone
         with _safe_session() as db:
             row = db.get(QuestionModel, question_id)
             if not row:
                 return False
             row.status = "deleted"
+            row.deleted_at = datetime.now(timezone.utc)
             return True
 
     def save_answer_record(self, data: dict) -> dict:
@@ -1174,7 +1201,7 @@ class PostgresVerticalLoopRepository:
     def list_user_resources(self, user_id: UUID) -> List[dict]:
         with SessionLocal() as db:
             rows = db.scalars(
-                select(LearningResourceModel).where(LearningResourceModel.user_id == user_id).order_by(desc(LearningResourceModel.created_at)).limit(100)
+                select(LearningResourceModel).where(LearningResourceModel.user_id == user_id, LearningResourceModel.deleted_at.is_(None)).order_by(desc(LearningResourceModel.created_at)).limit(100)
             ).all()
             results = []
             for row in rows:
@@ -1193,11 +1220,13 @@ class PostgresVerticalLoopRepository:
             return results
 
     def delete_resource(self, user_id: UUID, resource_id: UUID) -> bool:
+        from datetime import datetime, timezone
         with _safe_session() as db:
             row = db.get(LearningResourceModel, resource_id)
-            if not row or row.user_id != user_id:
+            if not row or row.user_id != user_id or row.deleted_at is not None:
                 return False
-            db.delete(row)
+            row.deleted_at = datetime.now(timezone.utc)
+            row.status = "deleted"
             return True
 
     def emit_event(self, user_id: UUID, event_type: str, event_payload: dict, confidence: float, source_type: str = "agent", source_id: Optional[UUID] = None) -> UUID:
