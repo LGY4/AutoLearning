@@ -399,18 +399,30 @@ def _rerank_results(query: str, results: List[dict], top_k: int) -> List[dict]:
         return results[:top_k]
 
 
+def _tokenize_chinese(text: str) -> List[str]:
+    """Tokenize Chinese text using jieba, with fallback to character split."""
+    try:
+        import jieba
+        tokens = list(jieba.cut(text))
+        # Filter: min length 1 for Chinese chars, 2 for ASCII
+        return [t.strip() for t in tokens if len(t.strip()) >= 1 and not t.strip().isascii() or len(t.strip()) >= 2]
+    except ImportError:
+        # Fallback: split on punctuation and spaces
+        import re
+        normalized = re.sub(r'[，。、；：！？\s\(\)（）\[\]【】{}]+', ' ', text)
+        return [t for t in normalized.split() if len(t) >= 2]
+
+
 def _bm25_search(query: str, subject: Optional[str], top_k: int) -> List[dict]:
-    """BM25 keyword search over the knowledge base."""
-    import re
+    """BM25 keyword search over the knowledge base with Chinese tokenization."""
     import math
 
     chunks = load_knowledge_base()
     if not chunks:
         return []
 
-    # Tokenize query
-    normalized = re.sub(r'[，。、；：！？\s]+', ' ', query)
-    query_terms = [t for t in normalized.split() if len(t) >= 2]
+    # Tokenize query with jieba
+    query_terms = _tokenize_chinese(query)
     if not query_terms:
         return []
 
@@ -419,20 +431,29 @@ def _bm25_search(query: str, subject: Optional[str], top_k: int) -> List[dict]:
     avg_dl = sum(len(c.content) for c in chunks) / len(chunks)
     n_docs = len(chunks)
 
+    # Tokenize all chunks and compute IDF
+    chunk_tokens = []
+    for c in chunks:
+        text = f"{c.title} {c.content} {' '.join(c.tags)}"
+        chunk_tokens.append(_tokenize_chinese(text))
+
+    avg_dl = sum(len(t) for t in chunk_tokens) / len(chunk_tokens) if chunk_tokens else 1
+
     # Compute IDF for each query term
     idf = {}
     for term in query_terms:
-        df = sum(1 for c in chunks if term in c.content or term in c.title)
+        df = sum(1 for tokens in chunk_tokens if term in tokens or any(term in t for t in tokens))
         idf[term] = math.log((n_docs - df + 0.5) / (df + 0.5) + 1)
 
     # Score each chunk
     scored = []
-    for chunk in chunks:
-        text = f"{chunk.title} {chunk.content} {' '.join(chunk.tags)}"
-        dl = len(text)
+    for chunk, tokens in zip(chunks, chunk_tokens):
+        dl = len(tokens)
         tf_sum = 0
+        token_text = " ".join(tokens)
         for term in query_terms:
-            tf = text.count(term)
+            # Count term occurrences in tokenized text
+            tf = token_text.count(term) if len(term) > 1 else sum(1 for t in tokens if t == term)
             if tf > 0:
                 tf_sum += idf[term] * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avg_dl))
 

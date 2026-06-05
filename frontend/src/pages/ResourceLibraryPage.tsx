@@ -57,7 +57,7 @@ const QTYPE_LABELS: Record<string, string> = {
   case_analysis: "案例分析",
 };
 
-type Tab = "resources" | "questions" | "answers" | "bilibili";
+type Tab = "resources" | "questions" | "answers" | "bilibili" | "knowledge";
 
 export function ResourceLibraryPage() {
   const { state } = useAppContext();
@@ -220,6 +220,7 @@ export function ResourceLibraryPage() {
         <button className={`res-lib-tab ${tab === "questions" ? "active" : ""}`} onClick={() => setTab("questions")} type="button">题库</button>
         <button className={`res-lib-tab ${tab === "answers" ? "active" : ""}`} onClick={() => setTab("answers")} type="button">答题记录</button>
         <button className={`res-lib-tab ${tab === "bilibili" ? "active" : ""}`} onClick={() => setTab("bilibili")} type="button">B站视频</button>
+        <button className={`res-lib-tab ${tab === "knowledge" ? "active" : ""}`} onClick={() => setTab("knowledge")} type="button">知识库</button>
       </div>
 
       {/* Filters */}
@@ -441,6 +442,151 @@ export function ResourceLibraryPage() {
               <video controls autoPlay style={{ width: "100%", maxHeight: 500 }} src={videoPlayerUrl} />
             </div>
           </div>
+        </div>
+      )}
+
+      {/* Personal Knowledge Base tab */}
+      {tab === "knowledge" && (
+        <KnowledgeBaseSection />
+      )}
+    </div>
+  );
+}
+
+
+function KnowledgeBaseSection() {
+  const [docs, setDocs] = useState<Array<{ title: string; subject: string; source: string; chunk_count: number; tags: string[] }>>([]);
+  const [stats, setStats] = useState<{ total_chunks: number; documents: number }>({ total_chunks: 0, documents: 0 });
+  const [uploading, setUploading] = useState(false);
+  const [uploadTitle, setUploadTitle] = useState("");
+  const [uploadSubject, setUploadSubject] = useState("通用");
+  const [loading, setLoading] = useState(true);
+  const fileRef = { current: null as HTMLInputElement | null };
+
+  const loadData = useCallback(async () => {
+    setLoading(true);
+    try {
+      const [docsData, statsData] = await Promise.all([
+        apiGet<Array<{ title: string; subject: string; source: string; chunk_count: number; tags: string[] }>>("/knowledge/my-documents"),
+        apiGet<{ total_chunks: number; documents: number }>("/knowledge/my-stats"),
+      ]);
+      setDocs(docsData);
+      setStats(statsData);
+    } catch { /* ignore */ }
+    setLoading(false);
+  }, []);
+
+  useEffect(() => { loadData(); }, [loadData]);
+
+  const handleUpload = async () => {
+    const file = fileRef.current?.files?.[0];
+    if (!file || !uploadTitle.trim()) return;
+    setUploading(true);
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const params = new URLSearchParams({ title: uploadTitle.trim(), subject: uploadSubject });
+      await fetch(`/api/v1/knowledge/upload?${params}`, {
+        method: "POST",
+        headers: { Authorization: `Bearer ${localStorage.getItem("autolearning_access_token") || ""}` },
+        body: formData,
+      });
+      setUploadTitle("");
+      if (fileRef.current) fileRef.current.value = "";
+      await loadData();
+    } catch { /* ignore */ }
+    setUploading(false);
+  };
+
+  const handleDelete = async (title: string) => {
+    if (!confirm(`确定删除「${title}」？`)) return;
+    try {
+      await apiDelete(`/knowledge/my-documents/${encodeURIComponent(title)}`);
+      await loadData();
+    } catch { /* ignore */ }
+  };
+
+  return (
+    <div style={{ padding: 16 }}>
+      <h3 style={{ margin: "0 0 16px", fontSize: 16 }}>个人知识库</h3>
+      <p style={{ fontSize: 13, color: "#9ca3af", marginBottom: 16 }}>
+        上传文档到个人知识库，AI 辅导时会优先引用你上传的内容。支持 PDF、DOCX、PPTX、TXT、MD 格式。
+      </p>
+
+      {/* Stats */}
+      <div style={{ display: "flex", gap: 16, marginBottom: 16 }}>
+        <div style={{ padding: 12, background: "var(--bg-card)", borderRadius: 8, flex: 1 }}>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>{stats.documents}</div>
+          <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>文档数</div>
+        </div>
+        <div style={{ padding: 12, background: "var(--bg-card)", borderRadius: 8, flex: 1 }}>
+          <div style={{ fontSize: 24, fontWeight: 700 }}>{stats.total_chunks}</div>
+          <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>知识片段</div>
+        </div>
+      </div>
+
+      {/* Upload form */}
+      <div style={{ padding: 16, border: "1px solid var(--border-primary)", borderRadius: 8, marginBottom: 16 }}>
+        <div style={{ fontWeight: 600, marginBottom: 8, fontSize: 14 }}>上传文档</div>
+        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
+          <input
+            type="text"
+            placeholder="文档标题"
+            value={uploadTitle}
+            onChange={(e) => setUploadTitle(e.target.value)}
+            style={{ flex: 1, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border-primary)", background: "var(--bg-input)", color: "var(--text-primary)", fontSize: 13 }}
+          />
+          <input
+            type="text"
+            placeholder="学科（可选）"
+            value={uploadSubject}
+            onChange={(e) => setUploadSubject(e.target.value)}
+            style={{ width: 120, padding: "6px 10px", borderRadius: 6, border: "1px solid var(--border-primary)", background: "var(--bg-input)", color: "var(--text-primary)", fontSize: 13 }}
+          />
+        </div>
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <input
+            ref={(el) => { fileRef.current = el; }}
+            type="file"
+            accept=".pdf,.docx,.pptx,.txt,.md,.json,.py,.js,.ts"
+            style={{ fontSize: 13 }}
+          />
+          <button
+            onClick={handleUpload}
+            disabled={uploading || !uploadTitle.trim()}
+            style={{ padding: "6px 16px", borderRadius: 6, border: "none", background: uploadTitle.trim() ? "var(--accent-primary)" : "var(--bg-card)", color: "white", cursor: "pointer", fontSize: 13, whiteSpace: "nowrap" }}
+          >
+            {uploading ? "上传中..." : "上传"}
+          </button>
+        </div>
+      </div>
+
+      {/* Document list */}
+      {loading ? (
+        <div style={{ textAlign: "center", padding: 32 }}><Spinner /></div>
+      ) : docs.length === 0 ? (
+        <div style={{ textAlign: "center", padding: 32, color: "var(--text-tertiary)" }}>
+          暂无文档，上传你的学习资料开始使用。
+        </div>
+      ) : (
+        <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+          {docs.map((doc, i) => (
+            <div key={i} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", padding: "10px 14px", border: "1px solid var(--border-primary)", borderRadius: 8 }}>
+              <div>
+                <div style={{ fontWeight: 500, fontSize: 14 }}>{doc.title}</div>
+                <div style={{ fontSize: 12, color: "var(--text-tertiary)" }}>
+                  {doc.subject} · {doc.chunk_count} 个片段
+                  {doc.tags?.length > 0 && ` · ${doc.tags.slice(0, 3).join(", ")}`}
+                </div>
+              </div>
+              <button
+                onClick={() => handleDelete(doc.title)}
+                style={{ padding: "4px 10px", borderRadius: 6, border: "1px solid var(--status-error)", background: "transparent", color: "var(--status-error)", cursor: "pointer", fontSize: 12 }}
+              >
+                删除
+              </button>
+            </div>
+          ))}
         </div>
       )}
     </div>

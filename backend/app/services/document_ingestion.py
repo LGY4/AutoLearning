@@ -79,6 +79,7 @@ def ingest_document(
     subject: str = "通用",
     tags: Optional[List[str]] = None,
     source: str = "user_upload",
+    deduplicate: bool = True,
 ) -> dict:
     """Chunk a document, generate embeddings, and store in ChromaDB.
 
@@ -86,6 +87,17 @@ def ingest_document(
         {"chunks_created": int, "collection": str, "chunk_ids": list}
     """
     settings = get_settings()
+
+    # Deduplication: if a document with the same title exists, delete it first
+    if deduplicate:
+        try:
+            existing = list_user_documents(user_id)
+            if any(d["title"] == title for d in existing):
+                logger.info("Document '%s' already exists for user %s, replacing", title, user_id)
+                delete_user_document(user_id, title)
+        except Exception:
+            pass
+
     chunks = chunk_text(content)
 
     if not chunks:
