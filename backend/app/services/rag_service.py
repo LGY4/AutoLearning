@@ -351,8 +351,144 @@ def _apply_profile_boost(results: List[dict], profile) -> List[dict]:
     return results
 
 
+_reranker_model = None
+
+
+def _get_reranker():
+    """Lazy-load cross-encoder reranker model."""
+    global _reranker_model
+    if _reranker_model is not None:
+        return _reranker_model
+    try:
+        from sentence_transformers import CrossEncoder
+        # Use a lightweight Chinese cross-encoder
+        _reranker_model = CrossEncoder("BAAI/bge-reranker-base", max_length=512, device="cpu")
+        logger.info("Cross-encoder reranker loaded")
+    except Exception as exc:
+        logger.warning("Reranker unavailable: %s", exc)
+        _reranker_model = False
+    return _reranker_model
+
+
+def _rerank_results(query: str, results: List[dict], top_k: int) -> List[dict]:
+    """Rerank results using cross-encoder model for better relevance."""
+    if len(results) <= 1:
+        return results
+
+    reranker = _get_reranker()
+    if reranker is False or reranker is None:
+        return results[:top_k]
+
+    try:
+        # Build query-document pairs
+        pairs = [(query, f"{r.get('title', '')} {r.get('content', '')[:300]}") for r in results]
+        scores = reranker.predict(pairs)
+
+        # Combine reranker scores with original scores
+        for i, r in enumerate(results):
+            original = r.get("score", 0)
+            rerank_score = float(scores[i])
+            # Weighted combination: 60% reranker + 40% original
+            r["score"] = round(min(0.99, 0.4 * original + 0.6 * rerank_score), 2)
+            r["retrieval_engine"] = r.get("retrieval_engine", "unknown") + "+rerank"
+
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results[:top_k]
+    except Exception:
+        logger.debug("Reranking failed, using original order", exc_info=True)
+        return results[:top_k]
+
+
+def _bm25_search(query: str, subject: Optional[str], top_k: int) -> List[dict]:
+    """BM25 keyword search over the knowledge base."""
+    import re
+    import math
+
+    chunks = load_knowledge_base()
+    if not chunks:
+        return []
+
+    # Tokenize query
+    normalized = re.sub(r'[，。、；：！？\s]+', ' ', query)
+    query_terms = [t for t in normalized.split() if len(t) >= 2]
+    if not query_terms:
+        return []
+
+    # BM25 parameters
+    k1, b = 1.5, 0.75
+    avg_dl = sum(len(c.content) for c in chunks) / len(chunks)
+    n_docs = len(chunks)
+
+    # Compute IDF for each query term
+    idf = {}
+    for term in query_terms:
+        df = sum(1 for c in chunks if term in c.content or term in c.title)
+        idf[term] = math.log((n_docs - df + 0.5) / (df + 0.5) + 1)
+
+    # Score each chunk
+    scored = []
+    for chunk in chunks:
+        text = f"{chunk.title} {chunk.content} {' '.join(chunk.tags)}"
+        dl = len(text)
+        tf_sum = 0
+        for term in query_terms:
+            tf = text.count(term)
+            if tf > 0:
+                tf_sum += idf[term] * (tf * (k1 + 1)) / (tf + k1 * (1 - b + b * dl / avg_dl))
+
+        # Subject bonus
+        if subject and subject in chunk.subject:
+            tf_sum *= 1.3
+
+        if tf_sum > 0:
+            scored.append((tf_sum, chunk))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    max_score = scored[0][0] if scored else 1.0
+
+    return [
+        {
+            "chunk_id": chunk.chunk_id,
+            "title": chunk.title,
+            "content": chunk.content,
+            "subject": chunk.subject,
+            "score": round(min(0.99, score / max_score * 0.95), 2),
+            "retrieval_engine": "bm25",
+            "tags": list(chunk.tags),
+        }
+        for score, chunk in scored[:top_k]
+    ]
+
+
+def _rrf_fusion(vector_results: List[dict], bm25_results: List[dict], top_k: int, k: int = 60) -> List[dict]:
+    """Reciprocal Rank Fusion: combine vector and BM25 results."""
+    rrf_scores: dict[str, float] = {}
+    result_map: dict[str, dict] = {}
+
+    for rank, r in enumerate(vector_results):
+        cid = r["chunk_id"]
+        rrf_scores[cid] = rrf_scores.get(cid, 0) + 1 / (k + rank + 1)
+        result_map[cid] = r
+
+    for rank, r in enumerate(bm25_results):
+        cid = r["chunk_id"]
+        rrf_scores[cid] = rrf_scores.get(cid, 0) + 1 / (k + rank + 1)
+        if cid not in result_map:
+            result_map[cid] = r
+
+    # Sort by RRF score
+    sorted_ids = sorted(rrf_scores.keys(), key=lambda cid: rrf_scores[cid], reverse=True)
+    results = []
+    for cid in sorted_ids[:top_k]:
+        r = result_map[cid].copy()
+        r["score"] = round(min(0.99, rrf_scores[cid] * 10), 2)  # normalize to 0-1
+        r["retrieval_engine"] = "hybrid_rrf"
+        results.append(r)
+    return results
+
+
 def search_knowledge(query: str, subject: Optional[str] = None, top_k: int = 5, profile=None, user_id=None) -> List[dict]:
-    """Search knowledge base. If user_id provided, search user's KB first, then system KB."""
+    """Search knowledge base with hybrid retrieval (vector + BM25 + RRF fusion)."""
     results: List[dict] = []
 
     # 1. Search user's personal knowledge base first (higher priority)
@@ -367,20 +503,30 @@ def search_knowledge(query: str, subject: Optional[str] = None, top_k: int = 5, 
         except Exception:
             pass
 
-    # 2. Search system knowledge base
+    # 2. Hybrid search on system knowledge base
     remaining = top_k - len(results)
     if remaining > 0:
         if get_settings().rag_backend == "memory":
             system_results = _memory_search(query, subject, remaining)
         else:
-            chroma_results = _chroma_search(query, subject, remaining)
-            system_results = chroma_results if chroma_results is not None else _memory_search(query, subject, remaining)
+            # Hybrid: vector + BM25 + RRF fusion
+            vector_results = _chroma_search(query, subject, remaining * 2) or []
+            bm25_results = _bm25_search(query, subject, remaining * 2)
+
+            if vector_results and bm25_results:
+                system_results = _rrf_fusion(vector_results, bm25_results, remaining)
+            elif vector_results:
+                system_results = vector_results[:remaining]
+            elif bm25_results:
+                system_results = bm25_results[:remaining]
+            else:
+                system_results = _memory_search(query, subject, remaining)
         results.extend(system_results)
 
     if profile is not None:
         results = _apply_profile_boost(results, profile)
 
-    # Deduplicate and sort
+    # Deduplicate
     seen: set = set()
     deduped: List[dict] = []
     for r in results:
@@ -388,8 +534,10 @@ def search_knowledge(query: str, subject: Optional[str] = None, top_k: int = 5, 
         if cid not in seen:
             seen.add(cid)
             deduped.append(r)
-    deduped.sort(key=lambda x: x.get("score", 0), reverse=True)
-    return deduped[:top_k]
+
+    # Rerank with cross-encoder for better relevance
+    deduped = _rerank_results(query, deduped, top_k)
+    return deduped
 
 
 def search_knowledge_with_graph(query: str, subject: Optional[str] = None, top_k: int = 5, profile=None, user_id=None) -> List[dict]:

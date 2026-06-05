@@ -59,6 +59,25 @@ def post_learning_update(
             emit_event(user_id, ProfileEventType.ADAPTIVE_QUIZ, {"knowledge_point": knowledge_point, "dimension": dim.model_dump(), "accuracy": accuracy, "total": total}, confidence=0.7)
             profile = profile_service.get_profile(user_id, conversation_id=conversation_id)
 
+            # FSRS spaced repetition: update card state based on quiz performance
+            try:
+                from app.services.spaced_repetition import review_card, card_state_from_dict, card_state_to_dict, RATING_AGAIN, RATING_HARD, RATING_GOOD, RATING_EASY
+                sr_data = _get_sr_card(user_id, knowledge_point)
+                card = card_state_from_dict(sr_data) if sr_data else __import__("app.services.spaced_repetition", fromlist=["CardState"]).CardState()
+                # Map accuracy to FSRS rating
+                if accuracy >= 0.9:
+                    rating = RATING_EASY
+                elif accuracy >= 0.7:
+                    rating = RATING_GOOD
+                elif accuracy >= 0.5:
+                    rating = RATING_HARD
+                else:
+                    rating = RATING_AGAIN
+                updated_card = review_card(card, rating)
+                _save_sr_card(user_id, knowledge_point, card_state_to_dict(updated_card))
+            except Exception:
+                logger.debug("FSRS update failed for kp=%s", knowledge_point, exc_info=True)
+
     # 2. Strategy calculation
     if not profile:
         profile = profile_service.get_profile(user_id, conversation_id=conversation_id)
@@ -278,3 +297,35 @@ def _consume_suggested_generations(user_id: UUID) -> int:
         except Exception:
             logger.warning("Failed to consume suggestion", exc_info=True)
     return consumed
+
+
+# ── FSRS Spaced Repetition Card Storage ──────────────────────────────
+
+def _get_sr_card(user_id: UUID, knowledge_point: str) -> Optional[dict]:
+    """Get FSRS card state for a knowledge point."""
+    try:
+        profile = profile_service.get_profile(user_id)
+        if not profile:
+            return None
+        sr_cards = profile.knowledge_profile.topic_dimensions.get(knowledge_point)
+        # Card state stored in profile metadata (dimension-level)
+        if hasattr(sr_cards, 'sr_card'):
+            return sr_cards.sr_card
+        return None
+    except Exception:
+        return None
+
+
+def _save_sr_card(user_id: UUID, knowledge_point: str, card_data: dict) -> None:
+    """Save FSRS card state. Uses repository metadata storage."""
+    try:
+        # Store in profile event for persistence
+        from app.services.profile_event_service import ProfileEventType, emit_event
+        emit_event(
+            user_id,
+            ProfileEventType.CONVERSATION_BEHAVIOR,
+            {"knowledge_point": knowledge_point, "sr_card": card_data},
+            confidence=0.5,
+        )
+    except Exception:
+        logger.debug("Failed to save SR card for kp=%s", knowledge_point, exc_info=True)
