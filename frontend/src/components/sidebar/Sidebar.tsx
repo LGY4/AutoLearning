@@ -1,6 +1,7 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { Button, message } from "antd";
 import { BookOpen, ChevronDown, ChevronRight, Film, GitBranch, GraduationCap, History, Library, LogOut, Map as MapIcon, MoreHorizontal, Pen, PenTool, Pencil, Plus, Trash2, TrendingUp, User, Wand2 } from "lucide-react";
+import { ThemeToggle } from "../common/ThemeToggle";
 import { useAppContext } from "../../context/AppContext";
 import { apiPatch, apiDelete, clearAccessToken } from "../../api/client";
 import type { ConversationSession } from "../../types/baseline";
@@ -410,6 +411,7 @@ export function Sidebar({ onAuth, onNewSession, onLoadHistory, onLoadConversatio
               <strong>{user?.username}</strong>
               <div>{user?.role ?? "student"}</div>
             </div>
+            <ThemeToggle />
             <button className="sidebar-logout" type="button" onClick={() => { clearAccessToken(); dispatch({ type: "LOGOUT" }); }} title="退出登录">
               <LogOut size={16} />
             </button>

@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { Search, X } from "lucide-react";
+import { Virtuoso } from "react-virtuoso";
 import { useAppContext } from "../../context/AppContext";
 import { apiGet, apiPatch, apiPost, apiPostStream, getFriendlyError } from "../../api/client";
 
@@ -731,7 +732,7 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
       </div>
 
       <div className="chat-messages">
-        {messages.length === 0 && (
+        {messages.length === 0 ? (
           <div className="chat-empty">
             <div className="chat-empty-card">
               <h3>{mode === "intent" ? "开始智能对话" : "启动学习流程"}</h3>
@@ -750,13 +751,18 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
               </div>
             </div>
           </div>
+        ) : (
+          <Virtuoso
+            data={messages}
+            followOutput="smooth"
+            itemContent={(index, msg) => (
+              <ErrorBoundary fallback={<div style={{ padding: 12, color: "#ef4444", fontSize: 13 }}>消息渲染出错，请刷新重试。</div>}>
+                <ChatMessage message={{ ...msg, onAction: handleAction }} />
+              </ErrorBoundary>
+            )}
+            style={{ flex: 1 }}
+          />
         )}
-        {messages.map((msg) => (
-          <ErrorBoundary key={msg.id} fallback={<div style={{ padding: 12, color: "#ef4444", fontSize: 13 }}>消息渲染出错，请刷新重试。</div>}>
-            <ChatMessage message={{ ...msg, onAction: handleAction }} />
-          </ErrorBoundary>
-        ))}
-        <div ref={messagesEndRef} />
       </div>
 
       <div className="floating-learning-input-wrapper">
