@@ -31,6 +31,14 @@ def _get_conversation_kp_heat(user_id: UUID) -> dict:
 
 
 def get_recommendations(user_id: UUID) -> List[Recommendation]:
+    """Get recommendations — delegates to enhanced engine with embedding + MMR."""
+    try:
+        from app.services.recommendation_engine import get_enhanced_recommendations
+        return get_enhanced_recommendations(user_id)
+    except Exception:
+        logger.debug("Enhanced engine failed, falling back to heuristics", exc_info=True)
+
+    # Fallback: basic heuristic scoring
     recommendations = repository.get_recommendations(user_id)
     if not recommendations:
         recommendations = repository.create_recommendations(user_id)

@@ -126,6 +126,26 @@ def grade_and_record(
         "time_spent_seconds": time_spent_seconds,
     })
 
+    # IRT ability estimation update (fire-and-forget)
+    try:
+        from app.services.irt_service import estimate_ability, ItemParams
+        from app.repositories.vertical_loop_repository import repository as _repo
+        # Get recent answers for this user to estimate ability
+        recent_answers = _repo.get_user_answer_history(user_id, limit=20)
+        responses = [{"question_id": str(a.get("question_id", "")), "is_correct": bool(a.get("is_correct"))} for a in recent_answers]
+        ability = estimate_ability(responses, {})
+        # Store ability estimate in profile event
+        if knowledge_point and ability.n_items >= 3:
+            from app.services.profile_event_service import ProfileEventType, emit_event
+            emit_event(user_id, ProfileEventType.CONVERSATION_BEHAVIOR, {
+                "knowledge_point": knowledge_point,
+                "irt_theta": round(ability.theta, 3),
+                "irt_se": round(ability.se, 3),
+                "irt_items": ability.n_items,
+            }, confidence=0.6)
+    except Exception:
+        logger.debug("IRT ability estimation failed", exc_info=True)
+
     # 画像反馈闭环：答题后更新四维度 + 创建学习记录
     if knowledge_point:
         try:
