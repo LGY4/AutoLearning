@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef, useMemo } from "react";
+import { useNavigate } from "react-router-dom";
 import { ErrorBoundary } from "../common/ErrorBoundary";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -18,9 +19,10 @@ import json from "react-syntax-highlighter/dist/esm/languages/prism/json";
 import css from "react-syntax-highlighter/dist/esm/languages/prism/css";
 import markup from "react-syntax-highlighter/dist/esm/languages/prism/markup";
 import { oneDark } from "react-syntax-highlighter/dist/esm/styles/prism";
-import type { LearningResource } from "../../types/baseline";
+import type { LearningResource, StudentProfile } from "../../types/baseline";
 import { useAppContext } from "../../context/AppContext";
-import { apiPost } from "../../api/client";
+import { apiGet, apiPost } from "../../api/client";
+import { buildResourceLearningSummary } from "../../utils/resourceActions";
 import { FlowchartView } from "./FlowchartView";
 import { WebFallbackView } from "./WebFallbackView";
 
@@ -884,6 +886,72 @@ function StructuredDocumentView({ content, title, outline }: { content: string; 
   );
 }
 
+function ResourceLearningActions({ resource }: Props) {
+  const { dispatch } = useAppContext();
+  const navigate = useNavigate();
+  const [completing, setCompleting] = useState(false);
+  const summary = useMemo(() => buildResourceLearningSummary(resource), [resource]);
+
+  const handleAskMore = () => {
+    dispatch({ type: "SET_PENDING_MESSAGE", payload: summary.chatPrompt });
+    navigate("/chat");
+  };
+
+  const handleComplete = async () => {
+    setCompleting(true);
+    try {
+      await apiPost("/learning/complete-knowledge-point", { knowledge_point: summary.topic });
+      dispatch({ type: "SET_NOTICE", payload: `已标记「${summary.topic}」完成。` });
+      dispatch({ type: "BUMP_PATH_VERSION" });
+      apiGet<StudentProfile>("/profiles/me")
+        .then((profile) => dispatch({ type: "SET_PROFILE", payload: profile }))
+        .catch(() => {});
+    } catch {
+      dispatch({ type: "SET_ERROR", payload: "标记完成失败，请稍后重试。" });
+    } finally {
+      setCompleting(false);
+    }
+  };
+
+  return (
+    <div className="resource-learning-panel" aria-label="资源学习行动">
+      <div className="resource-learning-meta">
+        <span className="resource-learning-topic">{summary.topic}</span>
+        <span>{summary.typeLabel}</span>
+        {summary.qualityPercent != null && <span>质量 {summary.qualityPercent}%</span>}
+        <span>{summary.generatedByLabel}</span>
+        {summary.methodLabels.map((label) => (
+          <span key={label}>{label}</span>
+        ))}
+      </div>
+
+      {summary.sourceTitles.length > 0 && (
+        <div className="resource-learning-sources">
+          <span>参考来源</span>
+          {summary.sourceTitles.map((title) => (
+            <em key={title}>{title}</em>
+          ))}
+        </div>
+      )}
+
+      <div className="resource-learning-actions">
+        <button className="resource-action-btn primary" onClick={handleAskMore} type="button">
+          继续追问
+        </button>
+        <button className="resource-action-btn" onClick={() => navigate(summary.practicePath)} type="button">
+          开始练习
+        </button>
+        <button className="resource-action-btn" onClick={handleComplete} type="button" disabled={completing}>
+          {completing ? "标记中..." : "标记完成"}
+        </button>
+        <button className="resource-action-btn ghost" onClick={() => navigate(summary.mapPath)} type="button">
+          查看地图
+        </button>
+      </div>
+    </div>
+  );
+}
+
 // ── Tracked Renderer (with consumption timing) ────────────────────────────
 
 export function TrackedResourceRenderer({ resource }: Props) {
@@ -947,29 +1015,33 @@ export function ResourceRenderer({ resource }: Props) {
     return <WebFallbackView results={results} resourceType={resource.resource_type} />;
   }
 
+  let contentView: JSX.Element;
   if (resource.resource_type === "mindmap") {
     // Detect draw.io XML vs Markmap markdown
     const isDrawioXml = resource.content.includes("<mxCell") || resource.content.includes("<mxfile");
-    return isDrawioXml
+    contentView = isDrawioXml
       ? <FlowchartView content={resource.content} />
       : <MarkmapView content={resource.content} />;
-  }
-  if (resource.resource_type === "flowchart") {
-    return <FlowchartView content={resource.content} />;
-  }
-  if (resource.resource_type === "quiz") {
-    return <QuizView content={resource.content} />;
-  }
-  if (resource.resource_type === "code_case") {
-    return <CodeView content={resource.content} />;
-  }
-  if (resource.resource_type === "video" || resource.resource_type === "animation") {
-    return <StoryboardView content={resource.content} />;
-  }
-  // document, reading — use structured view for two-stage content
-  if ((resource.resource_type === "document" || resource.resource_type === "reading") && resource.metadata?.two_stage) {
+  } else if (resource.resource_type === "flowchart") {
+    contentView = <FlowchartView content={resource.content} />;
+  } else if (resource.resource_type === "quiz") {
+    contentView = <QuizView content={resource.content} />;
+  } else if (resource.resource_type === "code_case") {
+    contentView = <CodeView content={resource.content} />;
+  } else if (resource.resource_type === "video" || resource.resource_type === "animation") {
+    contentView = <StoryboardView content={resource.content} />;
+  } else if ((resource.resource_type === "document" || resource.resource_type === "reading") && resource.metadata?.two_stage) {
+    // document, reading — use structured view for two-stage content
     const outline = (resource.metadata?.draft as Record<string, unknown>)?.outline as string[] | undefined;
-    return <StructuredDocumentView content={resource.content} title={resource.title} outline={outline} />;
+    contentView = <StructuredDocumentView content={resource.content} title={resource.title} outline={outline} />;
+  } else {
+    contentView = <MarkdownView content={resource.content} title={resource.title} />;
   }
-  return <MarkdownView content={resource.content} title={resource.title} />;
+
+  return (
+    <div className="resource-learning-shell">
+      <ResourceLearningActions resource={resource} />
+      {contentView}
+    </div>
+  );
 }

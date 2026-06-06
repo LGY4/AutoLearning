@@ -1935,6 +1935,89 @@ button {
   margin-top: 6px;
 }
 
+.resource-learning-shell {
+  display: grid;
+  gap: 14px;
+}
+
+.resource-learning-panel {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+}
+
+.resource-learning-meta,
+.resource-learning-sources,
+.resource-learning-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.resource-learning-meta span,
+.resource-learning-sources em {
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  color: rgba(255, 255, 255, 0.68);
+  font-size: 12px;
+  font-style: normal;
+  line-height: 1.2;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+  padding: 4px 10px;
+}
+
+.resource-learning-meta .resource-learning-topic {
+  color: #e2e8f0;
+  font-weight: 600;
+}
+
+.resource-learning-sources {
+  color: rgba(255, 255, 255, 0.44);
+  font-size: 12px;
+}
+
+.resource-action-btn {
+  align-items: center;
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  color: rgba(255, 255, 255, 0.72);
+  cursor: pointer;
+  display: inline-flex;
+  font-size: 12px;
+  justify-content: center;
+  min-height: 30px;
+  padding: 5px 12px;
+  transition: all 0.15s;
+}
+
+.resource-action-btn:hover:not(:disabled) {
+  background: rgba(99, 102, 241, 0.15);
+  border-color: rgba(99, 102, 241, 0.3);
+  color: #c7d2fe;
+}
+
+.resource-action-btn.primary {
+  background: rgba(99, 102, 241, 0.9);
+  border-color: rgba(99, 102, 241, 0.9);
+  color: #fff;
+}
+
+.resource-action-btn.ghost {
+  color: rgba(255, 255, 255, 0.55);
+}
+
+.resource-action-btn:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+}
+
 /* ── Resource Renderer: Markdown ──────────────────────────────────────── */
 
 .markdown-view {
