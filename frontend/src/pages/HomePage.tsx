@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { ArrowRight, BookOpen, Brain, Compass, Map, MessageSquare, PenTool, Sparkles, TrendingUp } from "lucide-react";
 import { useAppContext } from "../context/AppContext";
 import { OnboardPanel } from "../components/assessment/OnboardPanel";
+import { buildNextLearningActions, getLearningPathProgress } from "../utils/learningActions";
 
 interface Props {
   onAuth: () => void;
@@ -26,6 +27,11 @@ export function HomePage({ onAuth }: Props) {
     { label: "推荐资源", value: `${recommendations.length} 条` },
     { label: "对话会话", value: `${conversations.length} 个` },
   ];
+  const pathProgress = useMemo(() => getLearningPathProgress(learningPath), [learningPath]);
+  const nextActions = useMemo(
+    () => buildNextLearningActions({ profile, learningPath, recommendations }),
+    [learningPath, profile, recommendations]
+  );
 
   if (!user) {
     return (
@@ -151,6 +157,44 @@ export function HomePage({ onAuth }: Props) {
           ))}
         </div>
       </div>
+
+      <section className="home-next-panel" aria-label="下一步学习行动">
+        <div className="home-path-progress-card">
+          <div className="home-path-progress-head">
+            <span className="home-badge">
+              <Compass size={14} />
+              今日推进
+            </span>
+            <strong>{pathProgress.summary}</strong>
+          </div>
+          <div className="home-path-progress-track">
+            <div className="home-path-progress-fill" style={{ width: `${pathProgress.percent}%` }} />
+          </div>
+          <div className="home-path-progress-meta">
+            <span>{pathProgress.nextLabel}</span>
+            <span>{pathProgress.percent}%</span>
+          </div>
+        </div>
+
+        <div className="home-next-actions">
+          {nextActions.map((action) => (
+            <button
+              key={`${action.kind}-${action.title}`}
+              type="button"
+              className={`home-next-action ${action.kind}`}
+              onClick={() => navigate(action.to)}
+            >
+              <span className="home-next-action-label">{action.label}</span>
+              <strong>{action.title}</strong>
+              <span className="home-next-action-desc">{action.description}</span>
+              <span className="home-next-action-cta">
+                {action.cta}
+                <ArrowRight size={14} />
+              </span>
+            </button>
+          ))}
+        </div>
+      </section>
 
       <div className="home-shortcuts">
         <button type="button" className="home-shortcut" onClick={() => navigate("/chat")}>

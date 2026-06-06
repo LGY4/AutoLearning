@@ -5325,6 +5325,8 @@ button {
 .home-overview-card,
 .home-feature,
 .home-shortcut,
+.home-path-progress-card,
+.home-next-action,
 .home-weak-topics,
 .home-focus-card,
 .home-recommendations,
@@ -5642,6 +5644,126 @@ button {
   font-size: 24px;
 }
 
+.home-next-panel {
+  display: grid;
+  gap: 16px;
+  grid-template-columns: minmax(300px, 0.8fr) minmax(0, 1.2fr);
+  margin: 24px 0;
+}
+
+.home-path-progress-card {
+  display: grid;
+  gap: 14px;
+  padding: 22px;
+}
+
+.home-path-progress-head {
+  align-items: flex-start;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.home-path-progress-head strong {
+  color: #fff;
+  font-size: 16px;
+  line-height: 1.4;
+  text-align: right;
+}
+
+.home-path-progress-track {
+  background: rgba(255, 255, 255, 0.08);
+  border-radius: 999px;
+  height: 8px;
+  overflow: hidden;
+}
+
+.home-path-progress-fill {
+  background: linear-gradient(90deg, var(--accent), var(--success));
+  border-radius: inherit;
+  height: 100%;
+  transition: width 0.3s ease;
+}
+
+.home-path-progress-meta {
+  color: rgba(255,255,255,0.55);
+  display: flex;
+  font-size: 12px;
+  gap: 12px;
+  justify-content: space-between;
+}
+
+.home-next-actions {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.home-next-action {
+  align-items: flex-start;
+  color: #fff;
+  cursor: pointer;
+  display: grid;
+  gap: 8px;
+  min-height: 170px;
+  padding: 20px;
+  text-align: left;
+  transition: transform 0.2s ease, border-color 0.2s ease, background 0.2s ease;
+}
+
+.home-next-action:hover {
+  background: rgba(99, 102, 241, 0.1);
+  border-color: rgba(99, 102, 241, 0.24);
+  transform: translateY(-1px);
+}
+
+.home-next-action.practice:hover {
+  background: rgba(248, 113, 113, 0.1);
+  border-color: rgba(248, 113, 113, 0.24);
+}
+
+.home-next-action.resource:hover {
+  background: rgba(41, 151, 255, 0.1);
+  border-color: rgba(41, 151, 255, 0.24);
+}
+
+.home-next-action-label {
+  color: #93c5fd;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.home-next-action.practice .home-next-action-label {
+  color: #fca5a5;
+}
+
+.home-next-action.resource .home-next-action-label {
+  color: #7cc2ff;
+}
+
+.home-next-action strong {
+  color: #fff;
+  font-size: 16px;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.home-next-action-desc {
+  color: rgba(255,255,255,0.52);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.home-next-action-cta {
+  align-items: center;
+  color: var(--accent);
+  display: inline-flex;
+  font-size: 13px;
+  font-weight: 600;
+  gap: 6px;
+  margin-top: auto;
+}
+
 .home-shortcuts {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
@@ -5789,7 +5911,8 @@ button {
   .chat-workspace-hero,
   .home-hero-landing,
   .home-dashboard-hero,
-  .home-dashboard-grid {
+  .home-dashboard-grid,
+  .home-next-panel {
     grid-template-columns: 1fr;
   }
 
@@ -5810,7 +5933,8 @@ button {
   .chat-workspace-stats,
   .home-overview-grid,
   .home-focus-list,
-  .home-rec-list {
+  .home-rec-list,
+  .home-next-actions {
     grid-template-columns: 1fr;
   }
 
@@ -5824,6 +5948,8 @@ button {
   .home-overview-card,
   .home-feature,
   .home-shortcut,
+  .home-path-progress-card,
+  .home-next-action,
   .home-weak-topics,
   .home-focus-card,
   .home-recommendations,
