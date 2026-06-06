@@ -7158,7 +7158,6 @@ button {
   height: 100%;
   border: none;
 }
-}
 
 /* ── Video Studio ──────────────────────────────────────────────────── */
 
@@ -7648,4 +7647,3 @@ button {
   max-height: 0; overflow: hidden; transition: max-height 0.3s ease-out;
 }
 .inline-panel-expand.open { max-height: 600px; }
-}

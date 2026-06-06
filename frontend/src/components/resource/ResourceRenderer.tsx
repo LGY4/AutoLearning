@@ -180,6 +180,18 @@ function MarkdownView({ content, title }: { content: string; title?: string }) {
 
 type MarkmapModule = typeof import("markmap-view");
 type TransformerModule = typeof import("markmap-lib");
+type MarkmapTreeNode = {
+  content?: unknown;
+  children?: MarkmapTreeNode[];
+};
+type XmindTopic = {
+  id: string;
+  class: "topic";
+  title: string;
+  children?: {
+    attached: XmindTopic[];
+  };
+};
 
 let _markmapMod: MarkmapModule | null = null;
 let _transformerMod: TransformerModule | null = null;
@@ -192,6 +204,44 @@ async function loadMarkmap(): Promise<{ Markmap: MarkmapModule["Markmap"]; Trans
     ]);
   }
   return { Markmap: _markmapMod.Markmap, Transformer: _transformerMod.Transformer };
+}
+
+function createXmindId(): string {
+  return crypto.randomUUID?.() ?? `topic-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+}
+
+function stripHtml(value: unknown): string {
+  return String(value ?? "Untitled").replace(/<[^>]*>/g, "").trim() || "Untitled";
+}
+
+async function buildXmindArchive(root: MarkmapTreeNode): Promise<ArrayBuffer> {
+  const { default: JSZip } = await import("jszip");
+  const toTopic = (node: MarkmapTreeNode): XmindTopic => {
+    const children = Array.isArray(node.children) ? node.children.map(toTopic) : [];
+    return {
+      id: createXmindId(),
+      class: "topic",
+      title: stripHtml(node.content),
+      ...(children.length ? { children: { attached: children } } : {}),
+    };
+  };
+
+  const zip = new JSZip();
+  const sheetId = createXmindId();
+  zip.file(
+    "content.json",
+    JSON.stringify([
+      {
+        id: sheetId,
+        class: "sheet",
+        title: stripHtml(root.content),
+        rootTopic: toTopic(root),
+      },
+    ])
+  );
+  zip.file("metadata.json", JSON.stringify({ creator: { name: "AutoLearning" }, dataStructureVersion: "2" }));
+  zip.file("manifest.json", JSON.stringify({ "file-entries": { "content.json": {}, "metadata.json": {} } }));
+  return zip.generateAsync({ type: "arraybuffer", compression: "STORE" });
 }
 
 function MarkmapView({ content }: { content: string }) {
@@ -228,30 +278,11 @@ function MarkmapView({ content }: { content: string }) {
   }, [content]);
 
   const handleExportXmind = async () => {
-    const [{ Workbook, RootTopic, Topic }, { Transformer: TF }] = await Promise.all([
-      import("xmind-generator"),
-      loadMarkmap(),
-    ]);
+    const { Transformer: TF } = await loadMarkmap();
     const tf = new TF();
     const { root } = tf.transform(content);
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const buildTopics = (nodes: any[]): ReturnType<typeof Topic>[] =>
-      nodes.map((node: any) => {
-        const topic = Topic(String(node.content).replace(/<[^>]*>/g, ""));
-        if (node.children?.length) {
-          topic.children(buildTopics(node.children));
-        }
-        return topic;
-      });
-
-    const rootTopic = RootTopic(String(root.content).replace(/<[^>]*>/g, ""));
-    if (root.children?.length) {
-      rootTopic.children(buildTopics(root.children));
-    }
-    const wb = Workbook(rootTopic);
-    const buffer = await wb.archive();
-    const blob = new Blob([buffer], { type: "application/octet-stream" });
+    const buffer = await buildXmindArchive(root as MarkmapTreeNode);
+    const blob = new Blob([buffer], { type: "application/vnd.xmind.workbook" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
