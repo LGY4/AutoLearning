@@ -55,3 +55,13 @@ def get_my_profile(current_user: UserDTO = Depends(get_current_user)) -> ApiResp
 @router.get("/me/versions", response_model=ApiResponse[List[StudentProfile]])
 def get_my_profile_versions(current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[List[StudentProfile]]:
     return success(profile_service.get_profile_versions(current_user.id))
+
+
+@router.get("/{user_id}", response_model=ApiResponse[StudentProfile])
+def get_profile_by_user_id(user_id: UUID, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[StudentProfile]:
+    if user_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Forbidden")
+    profile = profile_service.get_profile(current_user.id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    return success(profile)

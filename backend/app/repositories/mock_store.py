@@ -287,7 +287,7 @@ class MockStore:
                     user_id=user_id,
                     resource_id=resource.resource_id,
                     title=resource.title,
-                    score=score,
+                    score=min(1.0, score / 100.0),
                     recommend_reason={
                         "main_reason": "根据画像、薄弱点和资源质量综合排序",
                         "weak_point": kp,

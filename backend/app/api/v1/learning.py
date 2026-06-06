@@ -17,7 +17,7 @@ from pydantic import BaseModel, Field
 from app.api.deps import get_current_user
 from app.core.response import ApiResponse, success
 from app.schemas.auth import UserDTO
-from app.schemas.learning import ResourceRecommendRequest, ResourceRecommendResponse
+from app.schemas.learning import LearningStartRequest, LearningStartResponse, ResourceRecommendRequest, ResourceRecommendResponse
 from app.services import assess_agent, diagnostic_agent, learning_service, master_agent
 
 _logger = logging.getLogger(__name__)
@@ -31,6 +31,13 @@ def get_welcome(current_user: UserDTO = Depends(get_current_user)) -> ApiRespons
     """Get personalized welcome data for the current user."""
     from app.services.welcome_service import get_welcome_data
     return success(get_welcome_data(current_user.id))
+
+
+@router.post("/start", response_model=ApiResponse[LearningStartResponse])
+def learning_start(payload: LearningStartRequest, current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[LearningStartResponse]:
+    """Synchronous full learning pipeline entrypoint."""
+    payload.user_id = current_user.id
+    return success(learning_service.start_learning_langgraph(payload))
 
 
 class IntentRouteRequest(BaseModel):

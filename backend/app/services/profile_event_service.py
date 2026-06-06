@@ -305,6 +305,8 @@ def _apply_llm_extract(profile: StudentProfile, payload: dict, confidence: float
 
     new_data = payload.get("profile", payload)
     new_profile = StudentProfile.model_validate(new_data)
+    if profile is None:
+        return new_profile
 
     # Knowledge layer: merge_dimensions per KP
     merged_dims = dict(profile.knowledge_profile.topic_dimensions)
@@ -341,9 +343,22 @@ def _apply_llm_extract(profile: StudentProfile, payload: dict, confidence: float
         "reading_patience": _blend_str(new_cog.reading_patience, cog.reading_patience),
     })
 
+    beh = profile.learning_behavior
+    new_beh = new_profile.learning_behavior
+    blended_beh = beh.model_copy(update={
+        "average_study_minutes": max(beh.average_study_minutes, new_beh.average_study_minutes),
+        "active_period": new_beh.active_period or beh.active_period,
+        "completion_rate": max(beh.completion_rate, new_beh.completion_rate),
+        "recent_scores": (new_beh.recent_scores or beh.recent_scores)[-10:],
+        "last_knowledge_point": new_beh.last_knowledge_point or beh.last_knowledge_point,
+    })
+
     return profile.model_copy(update={
+        "basic_info": new_profile.basic_info,
         "knowledge_profile": new_kp,
+        "learning_goal": new_profile.learning_goal,
         "learning_preference": blended_pref,
+        "learning_behavior": blended_beh,
         "cognitive_profile": blended_cog,
         "dynamic_update": DynamicUpdate(
             last_updated_at=datetime.now(timezone.utc).astimezone().isoformat(timespec="seconds"),

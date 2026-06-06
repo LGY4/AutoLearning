@@ -638,9 +638,9 @@ export function VideoPanel({ result }: { result: Record<string, unknown> }) {
             <source src={videoUrl} />
           </video>
         )}
-        {videoResult.scenes && (
+        {Array.isArray(videoResult.scenes) && (
           <div style={{ fontSize: 12, color: "#6b7280" }}>
-            {(videoResult.scenes as Array<unknown>).length} 个场景
+            {videoResult.scenes.length} 个场景
           </div>
         )}
       </div>
@@ -764,7 +764,7 @@ export function CourseGoalPanel({ result }: { result: Record<string, unknown> })
             <div key={i} style={{ padding: "8px 12px", border: "1px solid #e5e7eb", borderRadius: 8, fontSize: 13, display: "flex", justifyContent: "space-between", alignItems: "center" }}>
               <div>
                 <strong>{String(g.title || g.goal || "")}</strong>
-                {g.target_course && <span style={{ marginLeft: 8, fontSize: 11, color: "#6b7280" }}>{String(g.target_course)}</span>}
+                {g.target_course != null && <span style={{ marginLeft: 8, fontSize: 11, color: "#6b7280" }}>{String(g.target_course)}</span>}
               </div>
               {g.status != null && (
                 <span style={{

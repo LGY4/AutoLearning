@@ -93,7 +93,7 @@ def get_model_status() -> Dict[str, Union[str, bool, int]]:
 
     return {
         "provider": provider,
-        "mode": "unavailable",
+        "mode": "mock" if provider == "mock" else "unavailable",
         "presets": PROVIDER_PRESETS,
     }
 
@@ -640,12 +640,246 @@ def _validate_required_keys(payload: dict, required_keys: Optional[Iterable[str]
         raise ValueError(f"Structured model output missing keys: {', '.join(missing)}")
 
 
+def _mock_json(required_keys: Optional[Iterable[str]] = None) -> dict:
+    keys = set(required_keys or [])
+    topic = "栈的基本概念"
+
+    if {"basic_info", "knowledge_profile", "learning_goal", "learning_preference", "learning_behavior", "cognitive_profile"} <= keys:
+        return {
+            "basic_info": {"major": "计算机专业", "grade": "大二", "school": None},
+            "knowledge_profile": {
+                "overall_level": "beginner",
+                "known_topics": ["栈的基本概念"],
+                "weak_topics": ["递归", "复杂度分析", "栈的应用"],
+                "mastery_level": {"栈的基本概念": 0.4},
+                "topic_dimensions": {
+                    "栈的基本概念": {
+                        "mastery": "mid",
+                        "application": "low",
+                        "memory": "mid",
+                        "understanding": "mid",
+                    }
+                },
+            },
+            "learning_goal": {
+                "current_goal": "两周内掌握栈和队列",
+                "target_course": "数据结构",
+                "target_level": "project_practice",
+                "deadline": None,
+            },
+            "learning_preference": {
+                "learning_style": "visual",
+                "resource_preference": {
+                    "document": 0.7,
+                    "mindmap": 0.8,
+                    "quiz": 0.7,
+                    "video": 0.6,
+                    "animation": 0.6,
+                    "code_case": 0.7,
+                    "reading": 0.6,
+                },
+                "difficulty_preference": "step_by_step",
+            },
+            "learning_behavior": {
+                "average_study_minutes": 45,
+                "active_period": "evening",
+                "completion_rate": 0.0,
+                "recent_scores": [],
+                "last_knowledge_point": topic,
+            },
+            "cognitive_profile": {
+                "cognitive_style": "mixed",
+                "abstract_understanding": "medium",
+                "hands_on_ability": "medium",
+                "reading_patience": "medium",
+            },
+            "completeness_score": 0.82,
+            "confidence_score": 0.78,
+            "update_reason": "mock profile extraction",
+        }
+
+    if {"title", "strategy", "nodes"} <= keys:
+        return {
+            "title": "数据结构入门学习路径",
+            "strategy": {"summary": "按概念、实践、巩固的顺序学习。"},
+            "nodes": [
+                {
+                    "knowledge_point": "栈的基本概念",
+                    "estimated_minutes": 30,
+                    "recommended_resource_types": ["document", "mindmap", "quiz"],
+                    "reason": "先掌握后进先出的核心概念。",
+                },
+                {
+                    "knowledge_point": "队列的基本概念",
+                    "estimated_minutes": 30,
+                    "recommended_resource_types": ["document", "quiz"],
+                    "reason": "对比先进先出与后进先出。",
+                },
+                {
+                    "knowledge_point": "栈的应用",
+                    "estimated_minutes": 45,
+                    "recommended_resource_types": ["code_case", "quiz"],
+                    "reason": "通过括号匹配练习巩固应用。",
+                },
+            ],
+        }
+
+    if {"title", "summary", "sections"} <= keys:
+        return {
+            "title": f"{topic}学习大纲",
+            "summary": "围绕概念、操作和应用建立学习结构。",
+            "sections": [
+                {
+                    "heading": "核心概念",
+                    "key_points": ["后进先出", "入栈", "出栈"],
+                    "description": "解释栈的定义和基本操作。",
+                },
+                {
+                    "heading": "典型应用",
+                    "key_points": ["括号匹配", "函数调用"],
+                    "description": "说明栈在常见问题中的作用。",
+                },
+            ],
+        }
+
+    if "sections" in keys:
+        return {
+            "sections": [
+                {
+                    "heading": "核心概念",
+                    "content": "栈是一种后进先出的线性结构，常见操作包括入栈、出栈和查看栈顶。概念理解的关键是只允许在栈顶进行操作。",
+                },
+                {
+                    "heading": "应用示例",
+                    "content": "括号匹配可以用栈保存尚未匹配的左括号，遇到右括号时弹出并检查是否匹配。",
+                },
+            ],
+            "examples": ["浏览器后退记录", "函数调用栈"],
+            "common_mistakes": ["混淆栈和队列的进出顺序"],
+            "next_steps": ["练习括号匹配"],
+            "key_concepts": ["后进先出", "栈顶"],
+            "discussion_questions": ["栈和队列的差异是什么？"],
+            "references": ["本地知识库"],
+        }
+
+    if {"title", "markdown", "summary"} <= keys:
+        return {
+            "title": f"{topic}学习文档",
+            "markdown": (
+                f"# {topic}\n\n"
+                "栈是一种后进先出的线性数据结构。理解这个概念时，可以把入栈看作把元素放到栈顶，出栈看作从栈顶取走元素。\n\n"
+                "## 概念要点\n\n- 只能在栈顶操作\n- 入栈和出栈会改变栈顶\n- 常用于括号匹配和函数调用\n"
+            ),
+            "summary": "介绍栈的核心概念和基础应用。",
+            "outline": ["概念", "操作", "应用"],
+            "examples": ["括号匹配"],
+            "common_mistakes": ["把栈当作队列使用"],
+            "next_steps": ["完成一道括号匹配练习"],
+            "key_concepts": ["后进先出", "栈顶"],
+            "discussion_questions": ["为什么函数调用需要栈？"],
+            "references": ["本地知识库"],
+        }
+
+    if {"title", "questions"} <= keys:
+        return {
+            "title": f"{topic} - 练习题",
+            "overview": "用于检查对栈概念的理解。",
+            "questions": [
+                {
+                    "type": "choice",
+                    "stem": "栈的典型访问顺序是什么？",
+                    "options": ["先进先出", "后进先出", "随机访问"],
+                    "answer": "后进先出",
+                    "explanation": "栈只在栈顶插入和删除元素。",
+                    "difficulty": "beginner",
+                }
+            ],
+            "scoring_rules": ["答对核心概念即可得分"],
+        }
+
+    if {"title", "mindmap_markdown"} <= keys:
+        return {
+            "title": f"{topic}思维导图",
+            "mindmap_markdown": f"# {topic}\n## 概念\n### 后进先出\n## 操作\n### push\n### pop\n## 应用\n### 括号匹配\n",
+            "summary": "用导图梳理栈的概念、操作和应用。",
+            "key_branches": ["概念", "操作", "应用"],
+        }
+
+    if {"title", "drawio_xml"} <= keys:
+        return {
+            "title": f"{topic}流程图",
+            "drawio_xml": "<mxfile><diagram name=\"stack\"><mxGraphModel><root></root></mxGraphModel></diagram></mxfile>",
+            "summary": "栈操作流程图。",
+            "node_count": 3,
+        }
+
+    if {"title", "scenes"} <= keys:
+        return {
+            "title": f"{topic}教学分镜",
+            "total_seconds": 90,
+            "scenes": [
+                {
+                    "frame": 1,
+                    "duration_seconds": 30,
+                    "visual_description": "展示一个空栈和入栈过程。",
+                    "narration": "元素从栈顶进入。",
+                    "image_prompt": "educational stack push diagram",
+                },
+                {
+                    "frame": 2,
+                    "duration_seconds": 30,
+                    "visual_description": "展示出栈过程。",
+                    "narration": "最后进入的元素最先离开。",
+                    "image_prompt": "educational stack pop diagram",
+                },
+            ],
+            "summary": "通过分镜解释栈的后进先出。",
+            "key_points": ["后进先出", "栈顶操作"],
+        }
+
+    if {"title", "language", "code", "explanation"} <= keys:
+        return {
+            "title": f"{topic}代码案例",
+            "language": "python",
+            "code": "def is_balanced(text):\n    stack = []\n    pairs = {')': '(', ']': '[', '}': '{'}\n    for ch in text:\n        if ch in pairs.values():\n            stack.append(ch)\n        elif ch in pairs:\n            if not stack or stack.pop() != pairs[ch]:\n                return False\n    return not stack\n",
+            "run_instructions": ["保存为 stack_demo.py", "运行 python stack_demo.py"],
+            "explanation": "使用栈保存未匹配的左括号，遇到右括号时检查栈顶。",
+            "checkpoints": ["理解 push/pop", "完成括号匹配"],
+        }
+
+    if {"answer", "next_step", "markdown"} <= keys:
+        return {
+            "answer": "可以先把栈理解为只从一端进出的容器，最后放入的元素会最先取出。",
+            "next_step": "尝试手写一次括号匹配过程。",
+            "references": [],
+            "diagram_prompt": None,
+            "markdown": "可以先把栈理解为只从一端进出的容器，最后放入的元素会最先取出。",
+        }
+
+    if "quality_score" in keys:
+        return {"quality_score": 0.85, "feedback": "mock quality check passed"}
+
+    if "score" in keys:
+        return {"score": 85}
+
+    return {key: [] if key.endswith("s") else "" for key in keys}
+
+
+def _mock_text(prompt: str) -> str:
+    if "intent" in prompt.lower() or "意图" in prompt:
+        return '{"intent": "resource_generation", "confidence": 0.9, "reason": "mock intent"}'
+    return "你好，我是本地 mock 模型。"
+
+
 # ── Public API ─────────────────────────────────────────────────────────────
 
 
 def _dispatch_text(prompt: str, override: Optional[ModelOverride] = None) -> str:
     """Route to the configured LLM provider for text generation."""
     cfg = _resolve_overrides(override)
+
+    if cfg["provider"] == "mock":
+        return _mock_text(prompt)
 
     if cfg["use_spark"] and not (override and override.api_base):
         status = get_model_status()
@@ -659,6 +893,9 @@ def _dispatch_text(prompt: str, override: Optional[ModelOverride] = None) -> str
 def _dispatch_json(prompt: str, override: Optional[ModelOverride] = None) -> dict:
     """Route to the configured LLM provider for JSON generation."""
     cfg = _resolve_overrides(override)
+
+    if cfg["provider"] == "mock":
+        return _mock_json()
 
     if cfg["use_spark"] and not (override and override.api_base):
         status = get_model_status()
@@ -694,7 +931,9 @@ def generate_with_system_prompt(system_prompt: str, user_prompt: str, fallback: 
         raise ServiceError(ErrorCode.LLM_CIRCUIT_OPEN)
     cfg = _resolve_overrides(model_override)
     try:
-        if cfg["use_spark"] and not (model_override and model_override.api_base):
+        if cfg["provider"] == "mock":
+            result = _mock_text(user_prompt)
+        elif cfg["use_spark"] and not (model_override and model_override.api_base):
             result = _call_spark(f"[SYSTEM]\n{system_prompt}\n[USER]\n{user_prompt}")
         else:
             result = _call_openai_compatible_with_system(system_prompt, user_prompt, model_override)
@@ -715,6 +954,9 @@ def generate_json_with_system(
     model_override: Optional[ModelOverride] = None,
 ) -> dict:
     """Generate JSON with separate system/user messages. Falls back to text extraction on parse failure."""
+    if _resolve_overrides(model_override)["provider"] == "mock":
+        return _mock_json(required_keys)
+
     text = generate_with_system_prompt(system_prompt, user_prompt, model_override=model_override)
     try:
         parsed = json.loads(text)
@@ -881,6 +1123,16 @@ def generate_json(
     model_override: Optional[ModelOverride] = None,
 ) -> dict:
     """Generate structured JSON from the configured LLM with retry and validation."""
+    if _resolve_overrides(model_override)["provider"] == "mock":
+        payload = _mock_json(required_keys)
+        _validate_required_keys(payload, required_keys)
+        if schema is not None:
+            payload = schema.model_validate(payload).model_dump(mode="json")
+        payload["_model_mode"] = "mock"
+        payload["_retry_count"] = 0
+        _cb_record_success()
+        return payload
+
     if _cb_is_open():
         if fallback is not None:
             return {**fallback, "_model_mode": "circuit_breaker_open", "_retry_count": 0}

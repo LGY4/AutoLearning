@@ -204,6 +204,9 @@ def _start_intent_based(
     if parsed and not request.knowledge_point and parsed.knowledge_point:
         request.knowledge_point = parsed.knowledge_point
 
+    if "resource_types" in request.model_fields_set:
+        intent = Intent.RESOURCE_GENERATION
+
     if intent == Intent.TUTORING:
         return _run_tutoring(request, wf_id, emit)
     elif intent == Intent.ASSESSMENT:
@@ -461,6 +464,7 @@ def _run_exercise(request: LearningStartRequest, wf_id: UUID, emit) -> LearningS
 def _run_resource_generation(request: LearningStartRequest, wf_id: UUID, emit) -> LearningStartResponse:
     """Intelligent resource generation: profile → strategy → generate."""
     from app.services import resource_service, adaptive_service
+    from app.schemas.profile import ProfileExtractRequest
     from app.schemas.resource import ResourceGenerateRequest
 
     kp = request.knowledge_point or request.message[:30]
@@ -470,14 +474,25 @@ def _run_resource_generation(request: LearningStartRequest, wf_id: UUID, emit) -
         title=kp or "资源生成",
     )
 
-    profile = profile_service.get_or_create_profile(request.user_id)
+    try:
+        profile = profile_service.extract_profile(
+            ProfileExtractRequest(
+                user_id=request.user_id,
+                conversation=conversation_service.as_profile_conversation(session),
+                base_agent_id=request.base_agent_id,
+            ),
+            conversation_id=session.conversation_id,
+        )
+    except Exception:
+        logger.warning("Profile extraction during resource generation failed", exc_info=True)
+        profile = profile_service.get_or_create_profile(request.user_id)
     path = _default_path(request, kp)
 
     # 1. Get strategy-recommended params from profile + strategy engine
     emit({"agent_name": "profile_agent", "stage": "langgraph_node", "status": "running", "progress": 10, "hint": "正在分析画像和策略...", "node": "profile_agent", "duration_ms": 0})
     update = adaptive_service.post_learning_update(
         user_id=request.user_id, knowledge_point=kp,
-        conversation_context=request.message, conversation_id=request.conversation_id,
+        conversation_context=request.message, conversation_id=session.conversation_id,
     )
     strategy_types = update.get("recommended_types", [])
     resource_params = update.get("resource_params", {})
@@ -489,17 +504,19 @@ def _run_resource_generation(request: LearningStartRequest, wf_id: UUID, emit) -
     merged_types = list(request.resource_types) if request.resource_types else []
     from app.core.enums import ResourceType
     existing = {t.value if hasattr(t, "value") else str(t) for t in merged_types}
-    for rt in strategy_types:
-        if rt not in existing:
-            try:
-                merged_types.append(ResourceType(rt))
-            except ValueError:
-                pass
+    if "resource_types" not in request.model_fields_set:
+        for rt in strategy_types:
+            if rt not in existing:
+                try:
+                    merged_types.append(ResourceType(rt))
+                except ValueError:
+                    pass
     if not merged_types:
         merged_types = [ResourceType.DOCUMENT, ResourceType.QUIZ]
 
     # 3. Generate resources
     emit({"agent_name": "resource_agent", "stage": "langgraph_node", "status": "running", "progress": 30, "hint": f"ResourceAgent: 正在生成 {len(merged_types)} 类资源...", "node": "resource_agent", "duration_ms": 0})
+    generation_result = None
     try:
         result = resource_service.generate_resources(
             ResourceGenerateRequest(
@@ -512,6 +529,7 @@ def _run_resource_generation(request: LearningStartRequest, wf_id: UUID, emit) -
             ),
             emit_progress=emit,
         )
+        generation_result = result
         resources = result.resources
         emit({"agent_name": "resource_agent", "stage": "langgraph_node", "status": "done", "progress": 100, "hint": f"ResourceAgent: 已生成 {len(resources)} 份资源", "node": "resource_agent", "duration_ms": 0})
     except Exception as exc:
@@ -535,16 +553,18 @@ def _run_resource_generation(request: LearningStartRequest, wf_id: UUID, emit) -
         },
     )
 
-    workflow = workflow_service.get_workflow(wf_id)
+    response_wf_id = generation_result.workflow_id if generation_result else wf_id
+    response_task_id = generation_result.task_id if generation_result else uuid4()
+    workflow = workflow_service.get_workflow(response_wf_id)
     if workflow is None:
-        workflow = _build_fallback_workflow(wf_id, {"completed_steps": ["resource_agent"]}, request.user_id)
+        workflow = _build_fallback_workflow(response_wf_id, {"completed_steps": ["resource_agent"]}, request.user_id)
 
     return LearningStartResponse(
-        task_id=uuid4(), workflow_id=wf_id, conversation_id=session.conversation_id,
+        task_id=response_task_id, workflow_id=response_wf_id, conversation_id=session.conversation_id,
         status="success" if resources else "degraded",
-        stream_url=f"/api/v1/agent-workflows/{wf_id}/stream",
+        stream_url=f"/api/v1/agent-workflows/{response_wf_id}/stream",
         profile=profile, path=path, resources=resources, workflow=workflow,
-        recommendations=[], messages=session.messages,
+        recommendations=recommendation_service.get_recommendations(request.user_id), messages=session.messages,
     )
 
 

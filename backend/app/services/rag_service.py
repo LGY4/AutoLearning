@@ -4,6 +4,7 @@ from typing import List,  Optional
 
 import hashlib
 import json
+import logging
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
@@ -11,6 +12,8 @@ from uuid import NAMESPACE_URL, uuid5
 
 from app.core.config import get_settings
 from app.services import embedding_service
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)

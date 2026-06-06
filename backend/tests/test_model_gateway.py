@@ -10,6 +10,7 @@ import pytest
 from pydantic import BaseModel
 
 from app.services import model_gateway
+from app.services.model_gateway import ModelOverride
 
 
 class QuizPayload(BaseModel):
@@ -17,6 +18,7 @@ class QuizPayload(BaseModel):
 
 
 def test_generate_json_retries_until_valid(monkeypatch) -> None:
+    model_gateway._cb_state.clear()
     calls = iter(["not-json", '{"questions":[{"stem":"栈是什么","answer":"后进先出"}]}'])
 
     monkeypatch.setattr(
@@ -38,6 +40,7 @@ def test_generate_json_retries_until_valid(monkeypatch) -> None:
         fallback={"questions": []},
         required_keys=["questions"],
         schema=QuizPayload,
+        model_override=ModelOverride(provider="spark"),
     )
 
     assert payload["_model_mode"] == "spark"
@@ -46,6 +49,7 @@ def test_generate_json_retries_until_valid(monkeypatch) -> None:
 
 
 def test_generate_json_raises_after_failures(monkeypatch) -> None:
+    model_gateway._cb_state.clear()
     monkeypatch.setattr(
         model_gateway,
         "get_model_status",
@@ -68,4 +72,5 @@ def test_generate_json_raises_after_failures(monkeypatch) -> None:
             required_keys=["questions"],
             schema=QuizPayload,
             max_retries=1,
+            model_override=ModelOverride(provider="spark"),
         )

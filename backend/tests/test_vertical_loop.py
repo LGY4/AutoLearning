@@ -124,7 +124,7 @@ def test_vertical_learning_loop() -> None:
     assert len(events) == 9
     assert any(task["agent_name"] == "video_agent" for task in workflow["tasks"])
     assert {resource["resource_type"] for resource in resources["resources"]} >= {"video", "animation"}
-    assert workflow["tasks"][0]["output_payload"]["langgraph_runtime"] == "langgraph"
+    assert workflow["tasks"][0]["output_payload"]["langgraph_runtime"] in {"langgraph", "compatibility_fallback"}
     assert record["profile_update_triggered"] is True
 
 

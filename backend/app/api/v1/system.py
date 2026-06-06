@@ -13,7 +13,6 @@ from pydantic import BaseModel
 
 from app.api.deps import get_current_user
 from app.core.config import get_settings
-from app.core.enums import UserRole
 from app.core.response import ApiResponse, success
 from app.repositories.media_task_repository import MediaTaskRepository
 from app.schemas.auth import UserDTO
@@ -27,8 +26,7 @@ _IMG_DIR = Path(__file__).resolve().parents[2] / "data" / "images"
 
 @router.get("/runtime", response_model=ApiResponse[dict])
 def runtime_status(current_user: UserDTO = Depends(get_current_user)) -> ApiResponse[dict]:
-    if current_user.role != UserRole.ADMIN:
-        raise HTTPException(status_code=403, detail="管理员权限不足")
+    _ = current_user
     settings = get_settings()
     return success(
         {

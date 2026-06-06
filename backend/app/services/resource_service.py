@@ -277,6 +277,12 @@ def get_async_generation_status(celery_task_id: str) -> AsyncTaskStatusResponse:
         with _fallback_lock:
             entry = _fallback_results.get(celery_task_id)
         if not entry:
+            if celery_task_id.startswith("local-fallback-"):
+                return AsyncTaskStatusResponse(
+                    celery_task_id=celery_task_id,
+                    status="broker_unavailable",
+                    result={"message": "Redis/Celery broker unavailable; local fallback task was not found."},
+                )
             return AsyncTaskStatusResponse(
                 celery_task_id=celery_task_id,
                 status="unknown",

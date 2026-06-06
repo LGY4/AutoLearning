@@ -61,8 +61,8 @@ def test_http_embedding_failure_can_fallback(monkeypatch) -> None:
 
     vector = embedding_service.embed_text("栈")
 
-    assert len(vector) == 16
-    assert embedding_service.get_embedding_status()["active_mode"] == "deterministic_16d"
+    assert len(vector) == embedding_service.get_settings().embedding_dimension
+    assert embedding_service.get_embedding_status()["active_mode"] == "deterministic_fallback"
     EmbeddingHandler.mode = "ok"
     server.shutdown()
     embedding_service.get_settings.cache_clear()

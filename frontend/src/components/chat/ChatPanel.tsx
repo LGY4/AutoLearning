@@ -111,29 +111,6 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
     }
   }, [state.activeMessages]);
 
-  // Consume pending message from sidebar navigation
-  useEffect(() => {
-    if (state.pendingMessage) {
-      const msg = state.pendingMessage;
-      dispatch({ type: "SET_PENDING_MESSAGE", payload: null });
-      setInput(msg);
-      setTimeout(() => sendIntentMessage(msg), 50);
-    }
-  }, [state.pendingMessage, dispatch, sendIntentMessage]);
-
-  // Listen for quick action messages from WelcomePanel
-  useEffect(() => {
-    const handler = (e: Event) => {
-      const msg = (e as CustomEvent).detail;
-      if (msg) {
-        setInput(msg);
-        setTimeout(() => sendIntentMessage(msg), 50);
-      }
-    };
-    window.addEventListener("chat-send-message", handler);
-    return () => window.removeEventListener("chat-send-message", handler);
-  }, [sendIntentMessage]);
-
   // Auto-send welcome on new empty conversation
   useEffect(() => {
     if (messages.length === 0 && user && !state.selectedConversationId) {
@@ -478,6 +455,29 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
       );
     }
   }, [user, selectedBaseAgentId, dispatch, onAuth, recordLearning]);
+
+  // Consume pending message from sidebar navigation
+  useEffect(() => {
+    if (state.pendingMessage) {
+      const msg = state.pendingMessage;
+      dispatch({ type: "SET_PENDING_MESSAGE", payload: null });
+      setInput(msg);
+      setTimeout(() => sendIntentMessage(msg), 50);
+    }
+  }, [state.pendingMessage, dispatch, sendIntentMessage]);
+
+  // Listen for quick action messages from WelcomePanel
+  useEffect(() => {
+    const handler = (e: Event) => {
+      const msg = (e as CustomEvent).detail;
+      if (msg) {
+        setInput(msg);
+        setTimeout(() => sendIntentMessage(msg), 50);
+      }
+    };
+    window.addEventListener("chat-send-message", handler);
+    return () => window.removeEventListener("chat-send-message", handler);
+  }, [sendIntentMessage]);
 
   const pipelineBusyRef = useRef(false);
   const sendPipelineMessage = useCallback(async (content: string, images?: string[]) => {

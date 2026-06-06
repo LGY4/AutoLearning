@@ -15,6 +15,7 @@ from app.schemas.resource import (
     AsyncTaskStatusResponse,
     LearningResource,
     ResourceGenerateRequest,
+    ResourceGenerateResponse,
 )
 from app.services import resource_service
 from app.services import resource_library
@@ -26,6 +27,14 @@ router = APIRouter()
 
 
 # ── Resource Generation ───────────────────────────────────────────
+
+
+@router.post("/generate", response_model=ApiResponse[ResourceGenerateResponse])
+def generate_resources_sync(
+    payload: ResourceGenerateRequest, current_user: UserDTO = Depends(get_current_user)
+) -> ApiResponse[ResourceGenerateResponse]:
+    payload.user_id = current_user.id
+    return success(resource_service.generate_resources(payload))
 
 
 @router.post("/generate-async", response_model=ApiResponse[AsyncResourceGenerateResponse])
