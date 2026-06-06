@@ -14,7 +14,7 @@ interface Props {
 
 const MENU_ITEMS = [
   { key: "upload-image", label: "上传图片", icon: <Image size={14} /> },
-  { key: "upload-video", label: "上传视频", icon: <FileVideo size={14} /> },
+  { key: "media-studio", label: "多媒体工作室", icon: <FileVideo size={14} /> },
   { type: "divider" as const },
   { key: "custom-agent", label: "自定义智能体", icon: <Bot size={14} /> },
   { key: "select-agent", label: "选择智能体", icon: <Users size={14} /> },

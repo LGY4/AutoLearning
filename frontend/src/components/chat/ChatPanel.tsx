@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { Search, X } from "lucide-react";
 import { Virtuoso } from "react-virtuoso";
 import { useAppContext } from "../../context/AppContext";
@@ -46,6 +46,10 @@ function generateTitle(content: string): string {
   return clean.length > 10 ? clean.slice(0, 10) + "…" : clean || "新对话";
 }
 
+export function normalizeImageMessageContent(content: string): string {
+  return content.trim() || "请分析这张图片并给出学习建议";
+}
+
 interface Props {
   onAuth: () => void;
   onCreateAgent: () => void;
@@ -57,6 +61,7 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
   const { state, dispatch } = useAppContext();
   const { user, baseAgents, selectedBaseAgentId, loading } = state;
 
+  const navigate = useNavigate();
   const [searchParams] = useSearchParams();
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [input, setInput] = useState(() => searchParams.get("topic") || "");
@@ -589,7 +594,9 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
     if ((!content && !images?.length) || loading) return;
 
     setInput("");
-    if (mode === "intent") {
+    if (images?.length) {
+      await sendPipelineMessage(normalizeImageMessageContent(content), images);
+    } else if (mode === "intent") {
       await sendIntentMessage(content);
     } else {
       await sendPipelineMessage(content, images);
@@ -604,11 +611,11 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
       (window as any).__chatInputRefs?.openImageUpload?.();
       return;
     }
-    if (key === "upload-video") {
-      (window as any).__chatInputRefs?.openVideoUpload?.();
+    if (key === "media-studio") {
+      navigate("/media-studio");
       return;
     }
-  }, [onCreateAgent, onSelectAgent, onModelConfig]);
+  }, [navigate, onCreateAgent, onSelectAgent, onModelConfig]);
 
   const RESOURCE_HINTS = [
     { label: "文档资源", type: "document" as ResourceType },

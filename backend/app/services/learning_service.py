@@ -61,8 +61,6 @@ def start_learning_langgraph(
     emit_progress: Optional[Callable[[dict], None]] = None,
 ) -> LearningStartResponse:
     """LangGraph-first entry point with intent-based routing fallback."""
-    from app.workflows.langgraph_runtime import run_langgraph_workflow
-
     override = ModelOverride(
         provider=request.model_provider,
         api_base=request.model_api_base,
@@ -71,6 +69,11 @@ def start_learning_langgraph(
         temperature=request.model_temperature,
     )
     with model_override_context(override):
+        if request.images:
+            return _start_learning_impl(request, emit_progress)
+
+        from app.workflows.langgraph_runtime import run_langgraph_workflow
+
         # Try LangGraph first
         result = run_langgraph_workflow(
             user_id=request.user_id,

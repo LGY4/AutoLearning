@@ -13,7 +13,6 @@ interface Props {
 
 export function ChatInput({ value, onChange, onSend, loading, onStop, disabled }: Props) {
   const fileRef = useRef<HTMLInputElement>(null);
-  const videoRef = useRef<HTMLInputElement>(null);
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const [images, setImages] = useState<string[]>([]);
   const [listening, setListening] = useState(false);
@@ -32,30 +31,23 @@ export function ChatInput({ value, onChange, onSend, loading, onStop, disabled }
     autoResize();
   }, [value, autoResize]);
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: "image" | "video") => {
+  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const files = e.target.files;
     if (!files) return;
-    if (type === "video") {
-      message.info("当前学习流程仅支持图片理解，视频请到多媒体工作室处理。");
-      e.target.value = "";
-      return;
-    }
     for (const file of Array.from(files)) {
-      if (type === "image") {
-        if (!file.type.startsWith("image/")) {
-          message.warning("仅支持图片文件");
-          continue;
-        }
-        if (file.size > 10 * 1024 * 1024) {
-          message.warning("图片大小不能超过 10MB");
-          continue;
-        }
-        const reader = new FileReader();
-        reader.onload = () => {
-          setImages((prev) => [...prev, reader.result as string]);
-        };
-        reader.readAsDataURL(file);
+      if (!file.type.startsWith("image/")) {
+        message.warning("仅支持图片文件");
+        continue;
       }
+      if (file.size > 10 * 1024 * 1024) {
+        message.warning("图片大小不能超过 10MB");
+        continue;
+      }
+      const reader = new FileReader();
+      reader.onload = () => {
+        setImages((prev) => [...prev, reader.result as string]);
+      };
+      reader.readAsDataURL(file);
     }
     e.target.value = "";
   };
@@ -79,7 +71,6 @@ export function ChatInput({ value, onChange, onSend, loading, onStop, disabled }
 
   // Expose file refs for PlusMenu triggers
   const openImageUpload = () => fileRef.current?.click();
-  const openVideoUpload = () => videoRef.current?.click();
 
   // Voice input via Web Speech API
   const toggleVoice = useCallback(() => {
@@ -113,7 +104,7 @@ export function ChatInput({ value, onChange, onSend, loading, onStop, disabled }
 
   // Store refs globally for PlusMenu access
   useEffect(() => {
-    (window as any).__chatInputRefs = { openImageUpload, openVideoUpload };
+    (window as any).__chatInputRefs = { openImageUpload };
     return () => { delete (window as any).__chatInputRefs; };
   }, []);
 
@@ -137,15 +128,7 @@ export function ChatInput({ value, onChange, onSend, loading, onStop, disabled }
         accept="image/*"
         multiple
         style={{ display: "none" }}
-        onChange={(e) => handleFileChange(e, "image")}
-      />
-      <input
-        ref={videoRef}
-        type="file"
-        accept="video/*"
-        multiple
-        style={{ display: "none" }}
-        onChange={(e) => handleFileChange(e, "video")}
+        onChange={handleFileChange}
       />
       <textarea
         ref={textareaRef}
