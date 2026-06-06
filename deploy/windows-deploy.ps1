@@ -42,18 +42,28 @@ try {
     exit 1
 }
 
-# ── 3. 克隆或更新项目 ──────────────────────────────────────────
+# ── 3. 下载项目代码 ─────────────────────────────────────────────
 Write-Host "[3/6] 准备项目代码..." -ForegroundColor Yellow
-if (Test-Path "$PROJECT_DIR\.git") {
-    Set-Location $PROJECT_DIR
-    git pull origin main 2>&1 | Out-Null
-    Write-Host "  ✅ 代码已更新" -ForegroundColor Green
+if (Test-Path "$PROJECT_DIR\backend\app\main.py") {
+    Write-Host "  ✅ 项目代码已存在" -ForegroundColor Green
 } else {
-    if (Test-Path $PROJECT_DIR) {
-        Write-Host "  ⚠️  目录已存在但不是 git 仓库，将使用现有代码" -ForegroundColor Yellow
-    } else {
+    # 优先用 git，没有则下载 zip
+    $hasGit = $false
+    try { & git --version 2>&1 | Out-Null; $hasGit = $true } catch {}
+
+    if ($hasGit) {
         git clone https://github.com/LGY4/AutoLearning.git $PROJECT_DIR 2>&1 | Out-Null
-        Write-Host "  ✅ 项目已克隆" -ForegroundColor Green
+        Write-Host "  ✅ 项目已克隆 (git)" -ForegroundColor Green
+    } else {
+        Write-Host "  下载项目 (ZIP)..." -ForegroundColor Gray
+        $zipUrl = "https://github.com/LGY4/AutoLearning/archive/refs/heads/main.zip"
+        $zipFile = "$env:TEMP\autolearning.zip"
+        Invoke-WebRequest -Uri $zipUrl -OutFile $zipFile -UseBasicParsing
+        Expand-Archive -Path $zipFile -DestinationPath $env:TEMP -Force
+        if (Test-Path $PROJECT_DIR) { Remove-Item $PROJECT_DIR -Recurse -Force }
+        Move-Item "$env:TEMP\AutoLearning-main" $PROJECT_DIR
+        Remove-Item $zipFile -Force
+        Write-Host "  ✅ 项目已下载 (ZIP)" -ForegroundColor Green
     }
 }
 Set-Location $PROJECT_DIR
