@@ -21,6 +21,7 @@ import type {
   LearningPath,
   LearningResource,
   Recommendation,
+  ResourceGenerateResponse,
   ResourceType,
   StudentProfile,
 } from "../../types/baseline";
@@ -48,6 +49,67 @@ function generateTitle(content: string): string {
 
 export function normalizeImageMessageContent(content: string): string {
   return content.trim() || "请分析这张图片并给出学习建议";
+}
+
+interface FollowupResourceRecommendation {
+  knowledge_point?: string;
+  recommended_types?: string[];
+  resource_params?: { difficulty?: unknown };
+  decision?: string;
+}
+
+const FOLLOWUP_RESOURCE_TYPES: ResourceType[] = ["document", "mindmap", "quiz", "reading", "code_case", "flowchart"];
+
+export function selectFollowupResourceTypes(rec?: FollowupResourceRecommendation | null): ResourceType[] {
+  if (rec?.decision === "silent") return [];
+  const requested = rec?.recommended_types ?? ["document", "quiz"];
+  const selected = requested.filter((type): type is ResourceType =>
+    FOLLOWUP_RESOURCE_TYPES.includes(type as ResourceType)
+  );
+  return Array.from(new Set(selected)).slice(0, 2);
+}
+
+function normalizeResourceDifficulty(value: unknown): string {
+  if (value === 1 || value === "1" || value === "easy" || value === "beginner") return "easy";
+  if (value === 3 || value === "3" || value === "hard" || value === "advanced") return "hard";
+  return "medium";
+}
+
+export function buildTutorFollowupResourceRequest(params: {
+  userId: string;
+  baseAgentId?: string | null;
+  tutorResult: Record<string, unknown>;
+  fallbackTopic: string;
+}) {
+  const rec = params.tutorResult.resource_recommendation as FollowupResourceRecommendation | undefined;
+  const topic =
+    rec?.knowledge_point?.trim() ||
+    (typeof params.tutorResult.knowledge_point === "string" ? params.tutorResult.knowledge_point.trim() : "") ||
+    params.fallbackTopic.trim();
+  const resourceTypes = selectFollowupResourceTypes(rec);
+
+  if (!topic || resourceTypes.length === 0) return null;
+
+  return {
+    user_id: params.userId,
+    subject: topic,
+    knowledge_point: topic,
+    resource_types: resourceTypes,
+    difficulty: normalizeResourceDifficulty(rec?.resource_params?.difficulty),
+    ...(params.baseAgentId ? { base_agent_id: params.baseAgentId } : {}),
+  };
+}
+
+export function mergeLearningResources(existing: LearningResource[], incoming: LearningResource[]): LearningResource[] {
+  const seen = new Set<string>();
+  const merged: LearningResource[] = [];
+  for (const resource of [...existing, ...incoming]) {
+    const id = String(resource.resource_id);
+    if (seen.has(id)) continue;
+    seen.add(id);
+    merged.push(resource);
+  }
+  return merged;
 }
 
 interface Props {
@@ -167,6 +229,47 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
       }
     };
   }, []);
+
+  const generateTutorFollowupResources = useCallback(async (
+    messageId: string,
+    tutorResult: Record<string, unknown>,
+    fallbackTopic: string,
+  ) => {
+    if (!user) return;
+    const request = buildTutorFollowupResourceRequest({
+      userId: user.id,
+      baseAgentId: selectedBaseAgentId,
+      tutorResult,
+      fallbackTopic,
+    });
+    if (!request) return;
+
+    setMessages((prev) => prev.map((m) =>
+      m.id === messageId ? { ...m, resourcesLoading: true, resourcesError: null } : m
+    ));
+
+    try {
+      const response = await apiPost<ResourceGenerateResponse>("/resources/generate", request);
+      const generated = response.resources ?? [];
+      setMessages((prev) => prev.map((m) =>
+        m.id === messageId
+          ? { ...m, resourcesLoading: false, resources: mergeLearningResources(m.resources ?? [], generated) }
+          : m
+      ));
+      if (generated.length > 0) {
+        dispatch({ type: "SET_RESOURCES", payload: mergeLearningResources(resourcesRef.current, generated) });
+        apiGet<Recommendation[]>("/recommendations/")
+          .then((recs) => dispatch({ type: "SET_RECOMMENDATIONS", payload: recs }))
+          .catch(() => {});
+      }
+    } catch {
+      setMessages((prev) => prev.map((m) =>
+        m.id === messageId
+          ? { ...m, resourcesLoading: false, resourcesError: "配套资源生成失败，可稍后手动生成。" }
+          : m
+      ));
+    }
+  }, [dispatch, selectedBaseAgentId, user]);
 
   const sendIntentMessage = useCallback(async (content: string) => {
     if (!user) { onAuth(); return; }
@@ -298,6 +401,9 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
         apiGet<Recommendation[]>("/recommendations/")
           .then((recs) => dispatch({ type: "SET_RECOMMENDATIONS", payload: recs }))
           .catch(() => {});
+        if (!r.quiz_pending) {
+          void generateTutorFollowupResources(streamMsg.id, r, content);
+        }
       }
 
       // Add new conversation to sidebar in real-time
@@ -407,6 +513,10 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
         dispatch({ type: "SET_PATH", payload: asType<LearningPath>(r) });
       } else if (res.intent === "exercise" && r.resource_id) {
         dispatch({ type: "SET_RESOURCES", payload: [...resourcesRef.current, asType<LearningResource>(r)] });
+      } else if (res.intent === "tutoring") {
+        if (!r.quiz_pending) {
+          void generateTutorFollowupResources(streamMsg.id, r, content);
+        }
       }
 
       // React to backend auto-generation changes
@@ -473,7 +583,7 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
         prev.map((m) => (m.id === streamMsg.id && m.streaming ? { ...m, streaming: false } : m))
       );
     }
-  }, [user, selectedBaseAgentId, dispatch, onAuth, recordLearning]);
+  }, [user, selectedBaseAgentId, dispatch, onAuth, recordLearning, generateTutorFollowupResources]);
 
   // Consume pending message from sidebar navigation
   useEffect(() => {

@@ -51,6 +51,8 @@ export interface ChatMsg {
   profile?: StudentProfile;
   path?: LearningPath;
   resources?: LearningResource[];
+  resourcesLoading?: boolean;
+  resourcesError?: string | null;
   recommendations?: Recommendation[];
   workflow?: AgentWorkflow;
   intentResult?: IntentResult;
@@ -453,7 +455,7 @@ function ResourceRecommendCard({ rec, knowledgePoint, onConfirm, onCancel }: {
 }
 
 export const ChatMessage = React.memo(function ChatMessage({ message }: Props) {
-  const { role, content, streaming, images, profile, path, resources, recommendations, intentResult, trace, agentCards, currentAgent, pendingRecommendation, postQuiz, onQuizComplete, onAction } = message;
+  const { role, content, streaming, images, profile, path, resources, resourcesLoading, resourcesError, recommendations, intentResult, trace, agentCards, currentAgent, pendingRecommendation, postQuiz, onQuizComplete, onAction } = message;
 
   return (
     <div className={`chat-message ${role}`}>
@@ -541,6 +543,13 @@ export const ChatMessage = React.memo(function ChatMessage({ message }: Props) {
                 </div>
               </details>
             ))}
+          </div>
+        )}
+
+        {(resourcesLoading || resourcesError) && (
+          <div className={`chat-resource-generation-status ${resourcesError ? "error" : ""}`}>
+            {!resourcesError && <span className="agent-current-spinner" />}
+            <span>{resourcesError || "正在生成配套学习资源..."}</span>
           </div>
         )}
 

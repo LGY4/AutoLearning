@@ -7272,6 +7272,25 @@ button {
   border-top: 1px solid rgba(255, 255, 255, 0.04);
 }
 
+.chat-resource-generation-status {
+  align-items: center;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.16);
+  border-radius: 8px;
+  color: rgba(255, 255, 255, 0.72);
+  display: flex;
+  font-size: 12px;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 9px 12px;
+}
+
+.chat-resource-generation-status.error {
+  background: rgba(239, 68, 68, 0.08);
+  border-color: rgba(239, 68, 68, 0.2);
+  color: #fca5a5;
+}
+
 /* ── Flowchart (draw.io) ─────────────────────────────────────── */
 .home-error {
   padding: 8px 12px;
