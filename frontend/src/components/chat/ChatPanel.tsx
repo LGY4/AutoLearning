@@ -27,6 +27,20 @@ import type {
 
 type ChatMode = "intent" | "pipeline";
 
+export function buildStartStreamPayload(params: {
+  content: string;
+  conversationId: string | null;
+  baseAgentId: string | null;
+  images?: string[];
+}) {
+  return {
+    message: params.content,
+    conversation_id: params.conversationId,
+    base_agent_id: params.baseAgentId,
+    ...(params.images?.length ? { images: params.images } : {}),
+  };
+}
+
 function generateTitle(content: string): string {
   const clean = content.replace(/[#*`\n\r]+/g, " ").trim();
   return clean.length > 10 ? clean.slice(0, 10) + "…" : clean || "新对话";
@@ -498,11 +512,12 @@ export function ChatPanel({ onAuth, onCreateAgent, onSelectAgent, onModelConfig 
     let streamError: string | null = null;
 
     try {
-      await apiPostStream("/learning/start-stream", {
-        message: content,
-        conversation_id: convIdRef.current,
-        base_agent_id: selectedBaseAgentId,
-      }, (evt) => {
+      await apiPostStream("/learning/start-stream", buildStartStreamPayload({
+        content,
+        conversationId: convIdRef.current,
+        baseAgentId: selectedBaseAgentId,
+        images,
+      }), (evt) => {
         const data = evt.data as Record<string, unknown>;
         if (evt.type === "error") {
           streamError = String(data.message || "学习流程执行失败，请重试");

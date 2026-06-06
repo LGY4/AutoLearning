@@ -1,9 +1,3 @@
-# ╔══════════════════════════════════════════════════════════════╗
-# ║  AutoLearning — Windows 服务器部署脚本                       ║
-# ║  适用于：腾讯云宝塔 Windows 面板                             ║
-# ║  无需 Docker、无需 WSL、无需 PostgreSQL、无需 Redis           ║
-# ╚══════════════════════════════════════════════════════════════╝
-
 $ErrorActionPreference = "Stop"
 $PROJECT_DIR = "C:\AutoLearning"
 
@@ -11,7 +5,7 @@ Write-Host "==========================================" -ForegroundColor Cyan
 Write-Host "  AutoLearning Windows 部署" -ForegroundColor Cyan
 Write-Host "==========================================" -ForegroundColor Cyan
 
-# ── 1. 检查 Python ──────────────────────────────────────────────
+# 1. 检查 Python
 Write-Host "[1/6] 检查 Python..." -ForegroundColor Yellow
 $python = $null
 foreach ($p in @("python", "python3", "py")) {
@@ -19,167 +13,95 @@ foreach ($p in @("python", "python3", "py")) {
         $ver = & $p --version 2>&1
         if ($ver -match "Python 3\.(1[0-9]|[2-9][0-9])") {
             $python = $p
-            Write-Host "  ✅ $ver" -ForegroundColor Green
+            Write-Host "  OK $ver" -ForegroundColor Green
             break
         }
     } catch {}
 }
 if (-not $python) {
-    Write-Host "  ❌ 需要 Python 3.10+" -ForegroundColor Red
-    Write-Host "  下载安装: https://www.python.org/downloads/" -ForegroundColor Yellow
-    Write-Host "  安装时勾选 'Add Python to PATH'" -ForegroundColor Yellow
+    Write-Host "  FAIL: 需要 Python 3.10+" -ForegroundColor Red
+    Write-Host "  下载: https://www.python.org/downloads/" -ForegroundColor Yellow
     exit 1
 }
 
-# ── 2. 检查 Node.js ─────────────────────────────────────────────
+# 2. 检查 Node.js
 Write-Host "[2/6] 检查 Node.js..." -ForegroundColor Yellow
 try {
     $nodeVer = & node --version 2>&1
-    Write-Host "  ✅ Node.js $nodeVer" -ForegroundColor Green
+    Write-Host "  OK Node.js $nodeVer" -ForegroundColor Green
 } catch {
-    Write-Host "  ❌ 需要 Node.js 18+" -ForegroundColor Red
-    Write-Host "  下载安装: https://nodejs.org/" -ForegroundColor Yellow
+    Write-Host "  FAIL: 需要 Node.js 18+" -ForegroundColor Red
+    Write-Host "  下载: https://nodejs.org/" -ForegroundColor Yellow
     exit 1
 }
 
-# ── 3. 下载项目代码 ─────────────────────────────────────────────
+# 3. 下载项目代码
 Write-Host "[3/6] 准备项目代码..." -ForegroundColor Yellow
 if (Test-Path "$PROJECT_DIR\backend\app\main.py") {
-    Write-Host "  ✅ 项目代码已存在" -ForegroundColor Green
+    Write-Host "  OK 项目代码已存在" -ForegroundColor Green
 } else {
-    # 优先用 git，没有则下载 zip
-    $hasGit = $false
-    try { & git --version 2>&1 | Out-Null; $hasGit = $true } catch {}
-
-    if ($hasGit) {
-        git clone https://github.com/LGY4/AutoLearning.git $PROJECT_DIR 2>&1 | Out-Null
-        Write-Host "  ✅ 项目已克隆 (git)" -ForegroundColor Green
-    } else {
-        Write-Host "  下载项目 (ZIP)..." -ForegroundColor Gray
-        $zipUrl = "https://github.com/LGY4/AutoLearning/archive/refs/heads/main.zip"
-        $zipFile = "$env:TEMP\autolearning.zip"
-        Invoke-WebRequest -Uri $zipUrl -OutFile $zipFile -UseBasicParsing
-        Expand-Archive -Path $zipFile -DestinationPath $env:TEMP -Force
-        if (Test-Path $PROJECT_DIR) { Remove-Item $PROJECT_DIR -Recurse -Force }
-        Move-Item "$env:TEMP\AutoLearning-main" $PROJECT_DIR
-        Remove-Item $zipFile -Force
-        Write-Host "  ✅ 项目已下载 (ZIP)" -ForegroundColor Green
-    }
+    Write-Host "  下载项目 ZIP..." -ForegroundColor Gray
+    $zipUrl = "https://github.com/LGY4/AutoLearning/archive/refs/heads/main.zip"
+    $zipFile = "$env:TEMP\autolearning.zip"
+    Invoke-WebRequest -Uri $zipUrl -OutFile $zipFile -UseBasicParsing
+    Expand-Archive -Path $zipFile -DestinationPath $env:TEMP -Force
+    if (Test-Path $PROJECT_DIR) { Remove-Item $PROJECT_DIR -Recurse -Force }
+    Move-Item "$env:TEMP\AutoLearning-main" $PROJECT_DIR
+    Remove-Item $zipFile -Force
+    Write-Host "  OK 项目已下载" -ForegroundColor Green
 }
 Set-Location $PROJECT_DIR
 
-# ── 4. 配置环境变量 ─────────────────────────────────────────────
+# 4. 配置环境变量
 Write-Host "[4/6] 配置环境变量..." -ForegroundColor Yellow
 $envFile = "$PROJECT_DIR\backend\.env"
 if (-not (Test-Path $envFile)) {
     Copy-Item "$PROJECT_DIR\.env.example" $envFile
-    Write-Host "  ⚠️  请编辑 $envFile 填入 LLM_API_KEY" -ForegroundColor Yellow
-    Write-Host "  按回车继续（稍后编辑）..." -ForegroundColor Gray
+    Write-Host "  请编辑 $envFile 填入 LLM_API_KEY" -ForegroundColor Yellow
+    Write-Host "  按回车继续..." -ForegroundColor Gray
     Read-Host
-} else {
-    Write-Host "  ✅ .env 已存在" -ForegroundColor Green
 }
+# 设置为内存模式
+(Get-Content $envFile) -replace "REPOSITORY_BACKEND=.*", "REPOSITORY_BACKEND=memory" -replace "RAG_BACKEND=.*", "RAG_BACKEND=memory" | Set-Content $envFile
+Write-Host "  OK 已配置为内存模式" -ForegroundColor Green
 
-# 设置为内存模式（无需 PostgreSQL 和 Redis）
-$envContent = Get-Content $envFile -Raw
-if ($envContent -notmatch "REPOSITORY_BACKEND=memory") {
-    $envContent = $envContent -replace "REPOSITORY_BACKEND=.*", "REPOSITORY_BACKEND=memory"
-    $envContent = $envContent -replace "RAG_BACKEND=.*", "RAG_BACKEND=memory"
-    Set-Content $envFile $envContent
-    Write-Host "  ✅ 已设置为内存模式（无需数据库）" -ForegroundColor Green
-}
-
-# ── 5. 安装后端依赖 ─────────────────────────────────────────────
+# 5. 安装后端依赖
 Write-Host "[5/6] 安装后端依赖..." -ForegroundColor Yellow
 Set-Location "$PROJECT_DIR\backend"
-
 if (-not (Test-Path ".venv")) {
     & $python -m venv .venv
-    Write-Host "  虚拟环境已创建" -ForegroundColor Gray
 }
-
 & .\.venv\Scripts\pip.exe install -q -r requirements.txt 2>&1 | Out-Null
-Write-Host "  ✅ 后端依赖已安装" -ForegroundColor Green
+Write-Host "  OK 后端依赖已安装" -ForegroundColor Green
 
-# ── 6. 安装前端依赖 ─────────────────────────────────────────────
+# 6. 安装前端依赖
 Write-Host "[6/6] 安装前端依赖..." -ForegroundColor Yellow
 Set-Location "$PROJECT_DIR\frontend"
 npm install --silent 2>&1 | Out-Null
-Write-Host "  ✅ 前端依赖已安装" -ForegroundColor Green
+Write-Host "  OK 前端依赖已安装" -ForegroundColor Green
 
-# ── 创建启动脚本 ────────────────────────────────────────────────
+# 创建启动脚本
 Write-Host "" -ForegroundColor White
 Write-Host "创建启动脚本..." -ForegroundColor Yellow
 
-# 后端启动脚本
-$backendScript = @"
-@echo off
-title AutoLearning Backend
-cd /d "$PROJECT_DIR\backend"
-.\venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000
-pause
-"@
-Set-Content "$PROJECT_DIR\start-backend.bat" $backendScript
+Set-Content "$PROJECT_DIR\start-backend.bat" "@echo off`r`ntitle AutoLearning Backend`r`ncd /d `"$PROJECT_DIR\backend`"`r`n.\venv\Scripts\python.exe -m uvicorn app.main:app --host 0.0.0.0 --port 8000`r`npause"
 
-# 前端启动脚本
-$frontendScript = @"
-@echo off
-title AutoLearning Frontend
-cd /d "$PROJECT_DIR\frontend"
-npx vite --host 0.0.0.0 --port 5173
-pause
-"@
-Set-Content "$PROJECT_DIR\start-frontend.bat" $frontendScript
+Set-Content "$PROJECT_DIR\start-frontend.bat" "@echo off`r`ntitle AutoLearning Frontend`r`ncd /d `"$PROJECT_DIR\frontend`"`r`nnpx vite --host 0.0.0.0 --port 5173`r`npause"
 
-# 一键启动脚本
-$startAllScript = @"
-@echo off
-title AutoLearning - 启动中...
-echo ==========================================
-echo   AutoLearning 一键启动
-echo ==========================================
-echo.
+Set-Content "$PROJECT_DIR\start-all.bat" "@echo off`r`ntitle AutoLearning`r`necho Starting AutoLearning...`r`nstart `"`" cmd /c `"$PROJECT_DIR\start-backend.bat`"`r`ntimeout /t 8 /nobreak >nul`r`nstart `"`" cmd /c `"$PROJECT_DIR\start-frontend.bat`"`r`necho.`r`necho AutoLearning started!`r`necho Frontend: http://localhost:5173`r`necho Backend: http://localhost:8000/docs`r`npause"
 
-echo [1/2] 启动后端...
-start "Backend" cmd /c "$PROJECT_DIR\start-backend.bat"
-timeout /t 8 /nobreak >nul
+Write-Host "  OK 启动脚本已创建" -ForegroundColor Green
 
-echo [2/2] 启动前端...
-start "Frontend" cmd /c "$PROJECT_DIR\start-frontend.bat"
-timeout /t 5 /nobreak >nul
-
-echo.
-echo ==========================================
-echo   ✅ 启动完成
-echo ==========================================
-echo   前端: http://localhost:5173
-echo   后端: http://localhost:8000/docs
-echo   健康: http://localhost:8000/health
-echo.
-echo   关闭: 关闭 Backend 和 Frontend 窗口
-echo ==========================================
-pause
-"@
-Set-Content "$PROJECT_DIR\start-all.bat" $startAllScript
-
-Write-Host "  ✅ 启动脚本已创建" -ForegroundColor Green
-
-# ── 完成 ─────────────────────────────────────────────────────────
+# 完成
 Write-Host "" -ForegroundColor White
 Write-Host "==========================================" -ForegroundColor Green
-Write-Host "  ✅ 部署完成" -ForegroundColor Green
+Write-Host "  部署完成" -ForegroundColor Green
 Write-Host "==========================================" -ForegroundColor Green
 Write-Host "" -ForegroundColor White
 Write-Host "  项目位置: $PROJECT_DIR" -ForegroundColor White
+Write-Host "  启动: 双击 start-all.bat" -ForegroundColor White
+Write-Host "  前端: http://localhost:5173" -ForegroundColor Cyan
+Write-Host "  后端: http://localhost:8000/docs" -ForegroundColor Cyan
 Write-Host "" -ForegroundColor White
-Write-Host "  启动方式（任选一种）:" -ForegroundColor White
-Write-Host "    1. 双击 start-all.bat" -ForegroundColor White
-Write-Host "    2. 分别双击 start-backend.bat 和 start-frontend.bat" -ForegroundColor White
-Write-Host "" -ForegroundColor White
-Write-Host "  访问地址:" -ForegroundColor White
-Write-Host "    前端: http://localhost:5173" -ForegroundColor Cyan
-Write-Host "    后端: http://localhost:8000/docs" -ForegroundColor Cyan
-Write-Host "" -ForegroundColor White
-Write-Host "  ⚠️  记得在宝塔防火墙放行端口 5173 和 8000" -ForegroundColor Yellow
-Write-Host "  ⚠️  记得在腾讯云安全组放行端口 5173 和 8000" -ForegroundColor Yellow
+Write-Host "  记得放行端口 5173 和 8000" -ForegroundColor Yellow
 Write-Host "==========================================" -ForegroundColor Cyan

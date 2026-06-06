@@ -35,6 +35,11 @@ export function ChatInput({ value, onChange, onSend, loading, onStop, disabled }
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>, type: "image" | "video") => {
     const files = e.target.files;
     if (!files) return;
+    if (type === "video") {
+      message.info("当前学习流程仅支持图片理解，视频请到多媒体工作室处理。");
+      e.target.value = "";
+      return;
+    }
     for (const file of Array.from(files)) {
       if (type === "image") {
         if (!file.type.startsWith("image/")) {
@@ -43,20 +48,6 @@ export function ChatInput({ value, onChange, onSend, loading, onStop, disabled }
         }
         if (file.size > 10 * 1024 * 1024) {
           message.warning("图片大小不能超过 10MB");
-          continue;
-        }
-        const reader = new FileReader();
-        reader.onload = () => {
-          setImages((prev) => [...prev, reader.result as string]);
-        };
-        reader.readAsDataURL(file);
-      } else {
-        if (!file.type.startsWith("video/")) {
-          message.warning("仅支持视频文件");
-          continue;
-        }
-        if (file.size > 20 * 1024 * 1024) {
-          message.warning("视频大小不能超过 20MB（更大文件需要服务端上传支持）");
           continue;
         }
         const reader = new FileReader();

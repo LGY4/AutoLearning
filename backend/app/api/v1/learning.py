@@ -254,6 +254,7 @@ class StartStreamRequest(BaseModel):
     resource_types: Optional[List[str]] = None
     difficulty: str = Field(default="1", pattern="^[123]$")
     base_agent_id: Optional[UUID] = None
+    images: Optional[List[str]] = None
     model_provider: Optional[str] = None
     model_api_base: Optional[str] = None
     model_api_key: Optional[str] = None
@@ -297,6 +298,7 @@ def learning_start_stream(
                     resource_types=resource_types or default_resource_types(),
                     difficulty=payload.difficulty,
                     base_agent_id=payload.base_agent_id,
+                    images=payload.images,
                     model_provider=payload.model_provider,
                     model_api_base=payload.model_api_base,
                     model_api_key=payload.model_api_key,
