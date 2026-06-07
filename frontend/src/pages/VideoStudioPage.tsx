@@ -11,11 +11,15 @@ interface SceneResult {
 
 interface VideoResult {
   video_id: string;
-  video_url: string;
+  video_mode?: string;
+  provider_mode?: string;
+  generation_status?: string;
+  video_url?: string | null;
   thumbnail_url?: string;
   title: string;
   duration_seconds: number;
   scenes: SceneResult[];
+  fallback_used?: boolean;
 }
 
 interface ProgressEvent {
@@ -41,6 +45,18 @@ interface VideoHistoryItem {
   subject: string;
   result: VideoResult | null;
   created_at: string | null;
+}
+
+interface DigitalHumanStatus {
+  provider: string;
+  configured: boolean;
+  api_url: string;
+  persona_configured: boolean;
+  voice_configured: boolean;
+  fallback_available: boolean;
+  ffmpeg_available: boolean;
+  edge_tts_available: boolean;
+  mode: string;
 }
 
 const STYLES = [
@@ -90,6 +106,7 @@ export function VideoStudioPage() {
   const [progress, setProgress] = useState<ProgressEvent[]>([]);
   const [result, setResult] = useState<VideoResult | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [digitalHumanStatus, setDigitalHumanStatus] = useState<DigitalHumanStatus | null>(null);
 
   // History state
   const [historyItems, setHistoryItems] = useState<VideoHistoryItem[]>([]);
@@ -112,6 +129,13 @@ export function VideoStudioPage() {
       abortRef.current?.abort();
     };
   }, []);
+
+  useEffect(() => {
+    if (!user) return;
+    apiGet<DigitalHumanStatus>("/video/digital-human/status")
+      .then(setDigitalHumanStatus)
+      .catch(() => setDigitalHumanStatus(null));
+  }, [user]);
 
   // ── History ──
 
@@ -241,6 +265,18 @@ export function VideoStudioPage() {
     setError(null);
   };
 
+  const digitalHumanStatusLabel = digitalHumanStatus?.configured
+    ? "讯飞数字人已配置"
+    : digitalHumanStatus?.fallback_available
+      ? "本地降级可用"
+      : "当前仅分镜预览";
+
+  const digitalHumanStatusDetail = digitalHumanStatus?.configured
+    ? `云端接口 ${digitalHumanStatus.api_url}`
+    : digitalHumanStatus?.fallback_available
+      ? "可使用本地 FFmpeg 合成数字人讲解视频"
+      : "请配置讯飞数字人 API，或安装 FFmpeg 启用本地降级";
+
   // ── Status badge ──
 
   const statusBadge = (status: string) => {
@@ -279,6 +315,14 @@ export function VideoStudioPage() {
               <button type="button" className={`video-style-btn ${videoMode === "classic" ? "active" : ""}`} onClick={() => setVideoMode("classic")} disabled={generating}>知识讲解视频</button>
               <button type="button" className={`video-style-btn ${videoMode === "digital_human" ? "active" : ""}`} onClick={() => setVideoMode("digital_human")} disabled={generating}>数字人讲解</button>
             </div>
+            {videoMode === "digital_human" && (
+              <div className="digital-human-status-line">
+                <span className={digitalHumanStatus?.configured || digitalHumanStatus?.fallback_available ? "ready" : "warning"}>
+                  {digitalHumanStatusLabel}
+                </span>
+                <em>{digitalHumanStatusDetail}</em>
+              </div>
+            )}
           </div>
 
           <div className="video-form-field">
@@ -383,16 +427,22 @@ export function VideoStudioPage() {
               重新生成
             </button>
           </div>
-          <div className="video-player-container">
-            <video
-              controls
-              src={result.video_url}
-              poster={result.thumbnail_url || undefined}
-              className="video-player"
-            >
-              您的浏览器不支持视频播放
-            </video>
-          </div>
+          {result.video_url ? (
+            <div className="video-player-container">
+              <video
+                controls
+                src={result.video_url}
+                poster={result.thumbnail_url || undefined}
+                className="video-player"
+              >
+                您的浏览器不支持视频播放
+              </video>
+            </div>
+          ) : (
+            <div className="video-render-hint">
+              数字人视频未生成可播放文件，请配置讯飞数字人 API 或本地 FFmpeg 后重新生成。
+            </div>
+          )}
 
           <div className="video-result-info">
             <h2>{result.title}</h2>
@@ -415,10 +465,12 @@ export function VideoStudioPage() {
           )}
 
           <div className="video-result-actions">
-            <a href={result.video_url} download className="video-action-btn">
-              <Download size={16} />
-              下载视频
-            </a>
+            {result.video_url && (
+              <a href={result.video_url} download className="video-action-btn">
+                <Download size={16} />
+                下载视频
+              </a>
+            )}
             <button type="button" className="video-action-btn secondary" onClick={handleReset}>
               <RotateCcw size={16} />
               再次生成

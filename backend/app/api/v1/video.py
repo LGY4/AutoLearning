@@ -58,6 +58,16 @@ class VideoHistoryItem(BaseModel):
     created_at: Optional[str] = None
 
 
+@router.get("/digital-human/status", response_model=ApiResponse[dict])
+def get_digital_human_capability_status(
+    current_user: UserDTO = Depends(get_current_user),
+) -> ApiResponse[dict]:
+    """Return digital human provider/fallback status without exposing secrets."""
+    from app.services.digital_human_service import get_digital_human_status
+
+    return success(get_digital_human_status())
+
+
 # ── Helpers ──
 
 
@@ -174,13 +184,21 @@ def dh_generate_video_async(
                 reset_progress=reset_progress,
             )
             xfyun_tid = raw.get("task_id", "")
+            metadata = raw.get("metadata") or {}
+            provider_mode = metadata.get("mode", "unknown")
+            video_path = raw.get("video_path") or ""
+            video_url = f"/api/v1/video/file/{xfyun_tid}" if xfyun_tid and video_path else None
             result = {
                 "video_id": xfyun_tid,
-                "video_url": f"/api/v1/video/file/{xfyun_tid}",
+                "video_mode": "digital_human",
+                "provider_mode": provider_mode,
+                "generation_status": "rendered" if video_url else "storyboard_only",
+                "video_url": video_url,
                 "thumbnail_url": f"/api/v1/video/thumbnail/{xfyun_tid}" if raw.get("cover_path") else None,
                 "title": payload.knowledge_point or payload.text[:30],
                 "duration_seconds": 0,
                 "scenes": [],
+                "fallback_used": provider_mode == "fallback",
             }
             VideoTaskRepository.update_status(task_id, "done", result=result)
         except Exception as exc:

@@ -51,10 +51,10 @@ describe("normalizeImageMessageContent", () => {
 });
 
 describe("tutor follow-up resources", () => {
-  it("selects stable inline resource types and filters heavy media", () => {
+  it("allows a recommended video follow-up and still filters animation", () => {
     expect(selectFollowupResourceTypes({
       recommended_types: ["video", "document", "quiz", "animation", "mindmap"],
-    })).toEqual(["document", "quiz"]);
+    })).toEqual(["document", "video"]);
   });
 
   it("skips silent recommendations", () => {
@@ -79,7 +79,7 @@ describe("tutor follow-up resources", () => {
       user_id: "user-1",
       subject: "递归",
       knowledge_point: "递归",
-      resource_types: ["mindmap", "flowchart"],
+      resource_types: ["mindmap", "video"],
       difficulty: "easy",
       base_agent_id: "agent-1",
     });

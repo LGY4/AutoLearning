@@ -58,7 +58,8 @@ interface FollowupResourceRecommendation {
   decision?: string;
 }
 
-const FOLLOWUP_RESOURCE_TYPES: ResourceType[] = ["document", "mindmap", "quiz", "reading", "code_case", "flowchart"];
+const FOLLOWUP_RESOURCE_TYPES: ResourceType[] = ["document", "mindmap", "quiz", "reading", "code_case", "flowchart", "video"];
+const LIGHTWEIGHT_FOLLOWUP_RESOURCE_TYPES: ResourceType[] = ["document", "mindmap", "quiz", "reading", "code_case", "flowchart"];
 
 export function selectFollowupResourceTypes(rec?: FollowupResourceRecommendation | null): ResourceType[] {
   if (rec?.decision === "silent") return [];
@@ -66,7 +67,11 @@ export function selectFollowupResourceTypes(rec?: FollowupResourceRecommendation
   const selected = requested.filter((type): type is ResourceType =>
     FOLLOWUP_RESOURCE_TYPES.includes(type as ResourceType)
   );
-  return Array.from(new Set(selected)).slice(0, 2);
+  const unique = Array.from(new Set(selected));
+  if (!unique.includes("video")) return unique.slice(0, 2);
+
+  const firstLightweight = unique.find((type) => LIGHTWEIGHT_FOLLOWUP_RESOURCE_TYPES.includes(type));
+  return firstLightweight ? [firstLightweight, "video"] : ["video"];
 }
 
 function normalizeResourceDifficulty(value: unknown): string {

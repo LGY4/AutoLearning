@@ -15,6 +15,7 @@ import hashlib
 import hmac
 import json
 import logging
+import shutil
 import time
 from base64 import b64encode
 from datetime import datetime, timezone
@@ -31,6 +32,35 @@ from app.core.errors import ErrorCode, ServiceError
 logger = logging.getLogger(__name__)
 
 _DATA_DIR = Path(__file__).resolve().parents[1] / "data" / "generated_videos"
+
+
+def get_digital_human_status() -> dict:
+    """Return digital human capability status without exposing credentials."""
+    cfg = get_settings()
+    configured = bool(cfg.xfyun_dh_app_id and cfg.xfyun_dh_api_key and cfg.xfyun_dh_api_secret)
+    ffmpeg_available = shutil.which("ffmpeg") is not None
+    edge_tts_available = shutil.which("edge-tts") is not None
+    tts_configured = bool(cfg.llm_api_key)
+    fallback_available = ffmpeg_available and (edge_tts_available or tts_configured)
+    return {
+        "provider": "xfyun",
+        "configured": configured,
+        "api_url": cfg.xfyun_dh_api_url,
+        "persona_configured": bool(cfg.xfyun_dh_persona_id),
+        "voice_configured": bool(cfg.xfyun_dh_voice_id),
+        "fallback_available": fallback_available,
+        "fallback_requires": ["ffmpeg", "edge-tts or configured TTS"],
+        "ffmpeg_available": ffmpeg_available,
+        "edge_tts_available": edge_tts_available,
+        "tts_configured": tts_configured,
+        "mode": (
+            "xfyun_with_local_fallback"
+            if configured
+            else "local_fallback"
+            if fallback_available
+            else "storyboard_only"
+        ),
+    }
 
 
 class XfyunDHClient:

@@ -612,6 +612,11 @@ function StoryboardView({ content }: { content: string }) {
           videoPath: (payload.video_path || null) as string | null,
           videoUrl: (payload.video_url || null) as string | null,
           thumbnailUrl: (payload.thumbnail_url || null) as string | null,
+          videoMode: (payload.video_mode || "classic") as string,
+          providerMode: (payload.provider_mode || "") as string,
+          generationStatus: (payload.generation_status || "") as string,
+          fallbackUsed: Boolean(payload.fallback_used),
+          renderError: (payload.render_error || "") as string,
           summary: payload.summary || "",
           keyPoints: (payload.key_points || []) as string[],
           isAnimation: payload.is_animation || false,
@@ -684,9 +689,32 @@ function StoryboardView({ content }: { content: string }) {
     );
   }
 
-  const { title, scenes, sceneImages, videoPath, videoUrl, thumbnailUrl, summary, keyPoints, isAnimation } = parsed;
+  const {
+    title,
+    scenes,
+    sceneImages,
+    videoPath,
+    videoUrl,
+    thumbnailUrl,
+    videoMode,
+    providerMode,
+    generationStatus,
+    fallbackUsed,
+    renderError,
+    summary,
+    keyPoints,
+    isAnimation,
+  } = parsed;
   // video_url is preferred (API path), fallback to video_path for backward compat
   const videoSrc = videoUrl || (videoPath && !videoPath.startsWith("/") ? null : videoPath);
+  const isDigitalHuman = videoMode === "digital_human";
+  const providerLabel = providerMode === "xfyun"
+    ? "讯飞数字人"
+    : providerMode === "fallback"
+      ? "本地降级"
+      : providerMode === "local_unavailable"
+        ? "本地降级不可用"
+        : "";
 
   const handleDownloadVideo = () => {
     if (videoSrc) downloadFromUrl(videoSrc, (title || "video") + ".mp4");
@@ -722,7 +750,20 @@ function StoryboardView({ content }: { content: string }) {
       </div>
       {title && <h3 className="storyboard-title">{title}</h3>}
       {summary && <p className="storyboard-summary">{summary}</p>}
-      {isAnimation && <span className="storyboard-badge">动画</span>}
+      <div className="storyboard-badge-row">
+        {isDigitalHuman && <span className="storyboard-badge digital-human">数字人老师讲解</span>}
+        {providerLabel && <span className="storyboard-badge">{providerLabel}</span>}
+        {isAnimation && <span className="storyboard-badge">动画</span>}
+        {generationStatus === "storyboard_only" && <span className="storyboard-badge warning">分镜预览</span>}
+        {fallbackUsed && <span className="storyboard-badge">降级可用</span>}
+      </div>
+
+      {isDigitalHuman && !videoSrc && (
+        <div className="storyboard-render-hint">
+          数字人视频未生成可播放文件，当前展示分镜脚本。请配置讯飞数字人 API 或本地 FFmpeg 后重新生成。
+          {renderError ? <span> {renderError}</span> : null}
+        </div>
+      )}
 
       {/* Video player */}
       {videoSrc && (

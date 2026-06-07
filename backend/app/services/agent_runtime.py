@@ -1002,25 +1002,63 @@ def _generate_video_storyboard(
     except Exception:
         pass  # Image generation is optional, don't fail the whole resource
 
-    # Try to render actual video via FFmpeg pipeline
+    # Try to render actual video. Learning "video" resources use the digital
+    # human teacher path; animation keeps the classic storyboard video path.
+    video_mode = "classic" if is_animation else "digital_human"
+    provider_mode = "classic" if is_animation else "storyboard_only"
+    generation_status = "storyboard_only"
+    fallback_used = False
+    video_id = None
     video_path = None
     video_url = None
     thumbnail_url = None
-    try:
-        from app.services.video_pipeline_service import generate_video
-        video_result = generate_video(
-            topic=knowledge_point,
-            subject=subject,
-            num_scenes=min(len(draft.scenes), 5),
-            style="educational",
-        )
-        if video_result:
-            video_path = video_result.get("video_path")
-            video_url = video_result.get("video_url")
-            thumbnail_url = video_result.get("thumbnail_url")
-    except Exception as exc:
-        import logging
-        logging.getLogger(__name__).warning("FFmpeg video rendering failed: %s", exc)
+    render_error = None
+
+    if resource_type == ResourceType.VIDEO:
+        try:
+            from app.services.digital_human_service import generate_dh_video, get_digital_human_status
+
+            dh_status = get_digital_human_status()
+            if dh_status.get("configured") or dh_status.get("fallback_available"):
+                script_parts = [draft.summary or f"{knowledge_point}教学讲解"]
+                script_parts.extend(scene.narration for scene in draft.scenes[:5] if scene.narration)
+                script = "\n".join(part for part in script_parts if part).strip()
+                raw_video = generate_dh_video(
+                    text=script or knowledge_point,
+                    knowledge_point=knowledge_point,
+                )
+                raw_metadata = raw_video.get("metadata") or {}
+                provider_mode = str(raw_metadata.get("mode") or "unknown")
+                fallback_used = provider_mode == "fallback"
+                video_id = raw_video.get("task_id") or None
+                video_path = raw_video.get("video_path") or None
+                thumbnail_url = f"/api/v1/video/thumbnail/{video_id}" if raw_video.get("cover_path") and video_id else None
+                video_url = f"/api/v1/video/file/{video_id}" if video_id and video_path else None
+                generation_status = "rendered" if video_url else "storyboard_only"
+            else:
+                provider_mode = "local_unavailable"
+        except Exception as exc:
+            render_error = str(exc)
+            logger.warning("Digital human resource rendering failed: %s", exc)
+            provider_mode = "storyboard_only"
+    else:
+        try:
+            from app.services.video_pipeline_service import generate_video
+            video_result = generate_video(
+                topic=knowledge_point,
+                subject=subject,
+                num_scenes=min(len(draft.scenes), 5),
+                style="educational",
+            )
+            if video_result:
+                video_id = video_result.get("video_id")
+                video_path = video_result.get("video_path")
+                video_url = video_result.get("video_url")
+                thumbnail_url = video_result.get("thumbnail_url")
+                generation_status = "rendered" if video_url else "storyboard_only"
+        except Exception as exc:
+            render_error = str(exc)
+            logger.warning("FFmpeg video rendering failed: %s", exc)
 
     content = json.dumps(
         {
@@ -1028,12 +1066,18 @@ def _generate_video_storyboard(
             "total_seconds": draft.total_seconds,
             "scenes": [s.model_dump() for s in draft.scenes],
             "scene_images": scene_images,
+            "video_id": video_id,
+            "video_mode": video_mode,
+            "provider_mode": provider_mode,
+            "generation_status": generation_status,
             "video_path": video_path,
             "video_url": video_url,
             "thumbnail_url": thumbnail_url,
             "summary": draft.summary,
             "key_points": draft.key_points,
             "is_animation": is_animation,
+            "fallback_used": fallback_used,
+            "render_error": render_error,
         },
         ensure_ascii=False,
     )
@@ -1041,9 +1085,16 @@ def _generate_video_storyboard(
         **common_metadata,
         "draft": draft.model_dump(mode="json"),
         "scene_images": scene_images,
+        "video_id": video_id,
+        "video_mode": video_mode,
+        "provider_mode": provider_mode,
+        "generation_status": generation_status,
         "video_path": video_path,
         "video_url": video_url,
         "thumbnail_url": thumbnail_url,
+        "digital_human": resource_type == ResourceType.VIDEO,
+        "fallback_used": fallback_used,
+        "render_error": render_error,
     }
     return content, AgentName.VIDEO.value, metadata
 
