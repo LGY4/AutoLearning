@@ -161,6 +161,15 @@ cd infra
 docker compose up -d --build
 ```
 
+## 宝塔 Windows 面板部署
+
+Windows Server + 宝塔 Windows 面板 + Nginx 的生产部署参见 [docs/BAOTA_WINDOWS_DEPLOY.md](docs/BAOTA_WINDOWS_DEPLOY.md)。脚本入口：
+
+```powershell
+Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/LGY4/AutoLearning/main/deploy/baota-windows-deploy.ps1 -OutFile C:\Temp\baota-windows-deploy.ps1
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\Temp\baota-windows-deploy.ps1 -PublicOrigin http://159.75.71.163
+```
+
 ## 核心功能
 
 ### 智能对话（14 种意图）

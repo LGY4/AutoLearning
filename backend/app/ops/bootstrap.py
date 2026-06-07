@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Optional
 
 import socket
@@ -64,3 +65,12 @@ def bootstrap_application(seed_vertical_loop: bool = False) -> dict:
     seed_result = seed_demo_data(seed_vertical_loop=seed_vertical_loop)
     rag_result = import_knowledge_base(force=False)
     return {"seed": seed_result, "rag": rag_result}
+
+
+def main() -> None:
+    result = bootstrap_application(seed_vertical_loop=False)
+    print(json.dumps(result, ensure_ascii=False), flush=True)
+
+
+if __name__ == "__main__":
+    main()
