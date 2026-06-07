@@ -1,6 +1,6 @@
 import { useState, useMemo, useRef, useEffect, useCallback } from "react";
 import { Button, message } from "antd";
-import { BookOpen, ChevronDown, ChevronRight, Film, GitBranch, GraduationCap, History, Library, LogOut, Map as MapIcon, MoreHorizontal, Pen, PenTool, Pencil, Plus, Trash2, TrendingUp, User, Wand2 } from "lucide-react";
+import { BookOpen, ChevronDown, ChevronRight, Database, Film, GitBranch, GraduationCap, History, Library, LogOut, Map as MapIcon, MoreHorizontal, Pen, PenTool, Pencil, Plus, Trash2, TrendingUp, User, Wand2 } from "lucide-react";
 import { ThemeToggle } from "../common/ThemeToggle";
 import { useAppContext } from "../../context/AppContext";
 import { apiPatch, apiDelete, clearAccessToken } from "../../api/client";
@@ -60,6 +60,7 @@ const CREATE_NAV_ITEMS = [
 ];
 
 const REVIEW_NAV_ITEMS = [
+  { path: "/knowledge", label: "系统知识库", icon: Database },
   { path: "/dashboard", label: "学习看板", icon: TrendingUp },
   { path: "/resources", label: "资源 & 题库", icon: Library },
   { path: "/courses", label: "课程 & 目标", icon: BookOpen },

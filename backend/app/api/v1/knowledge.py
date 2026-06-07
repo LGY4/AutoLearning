@@ -10,7 +10,7 @@ from app.core.enums import UserRole
 from app.core.response import ApiResponse, success
 from app.schemas.auth import UserDTO
 from app.schemas.graph import GraphBuildRequest, GraphData, GraphPublishRequest, ReviewStatus
-from app.services import graph_builder_agent, graph_diff, graph_service, graph_validator, rag_service
+from app.services import graph_builder_agent, graph_diff, graph_service, graph_validator, knowledge_governance_service, rag_service
 from app.services.file_parser import parse_uploaded_file
 from app.repositories.graph_repository import graph_repository
 
@@ -58,6 +58,28 @@ def search_get(q: str, subject: Optional[str] = None, top_k: int = 5) -> ApiResp
 @router.get("/status", response_model=ApiResponse[dict])
 def status() -> ApiResponse[dict]:
     return success(rag_service.knowledge_status())
+
+
+@router.get("/governance", response_model=ApiResponse[dict])
+def governance() -> ApiResponse[dict]:
+    return success(knowledge_governance_service.governance_report())
+
+
+@router.get("/manifest", response_model=ApiResponse[dict])
+def manifest() -> ApiResponse[dict]:
+    return success(knowledge_governance_service.load_manifest())
+
+
+@router.get("/chunks", response_model=ApiResponse[list])
+def chunks(q: str = "", subject: Optional[str] = None, limit: int = 50) -> ApiResponse[list]:
+    safe_limit = max(1, min(limit, 100))
+    return success(knowledge_governance_service.chunk_summaries(query=q, subject=subject, limit=safe_limit))
+
+
+@router.get("/validate", response_model=ApiResponse[dict])
+def validate_system_knowledge() -> ApiResponse[dict]:
+    failures = knowledge_governance_service.validate_knowledge_base()
+    return success({"passed": not failures, "failures": failures})
 
 
 # ── User Knowledge Base ─────────────────────────────────────────────

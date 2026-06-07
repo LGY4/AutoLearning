@@ -21,11 +21,12 @@ const LearningMapPage = lazy(() => import("./pages/LearningMapPage").then((m) =>
 const PracticePage = lazy(() => import("./pages/PracticePage").then((m) => ({ default: m.PracticePage })));
 const GraphManagerPage = lazy(() => import("./pages/GraphManagerPage").then((m) => ({ default: m.GraphManagerPage })));
 const ResourceLibraryPage = lazy(() => import("./pages/ResourceLibraryPage").then((m) => ({ default: m.ResourceLibraryPage })));
+const SystemKnowledgePage = lazy(() => import("./pages/SystemKnowledgePage").then((m) => ({ default: m.SystemKnowledgePage })));
 const VideoStudioPage = lazy(() => import("./pages/VideoStudioPage").then((m) => ({ default: m.VideoStudioPage })));
 const CoursePage = lazy(() => import("./pages/CoursePage").then((m) => ({ default: m.CoursePage })));
 const MediaStudioPage = lazy(() => import("./pages/MediaStudioPage").then((m) => ({ default: m.MediaStudioPage })));
 
-const ALLOWED_INCOMPLETE = ["/", "/dashboard", "/courses", "/resources"];
+const ALLOWED_INCOMPLETE = ["/", "/dashboard", "/courses", "/resources", "/knowledge"];
 
 function App() {
   const { state, dispatch } = useAppContext();
@@ -257,6 +258,7 @@ function App() {
               <Route path="/practice" element={<PracticePage />} />
               <Route path="/graphs" element={<GraphManagerPage />} />
               <Route path="/resources" element={<ResourceLibraryPage />} />
+              <Route path="/knowledge" element={<SystemKnowledgePage />} />
               <Route path="/tutor" element={<Navigate to="/chat" replace />} />
               <Route path="/video-studio" element={<VideoStudioPage />} />
               <Route path="/courses" element={<CoursePage />} />
