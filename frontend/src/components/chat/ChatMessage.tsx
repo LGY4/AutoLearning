@@ -107,6 +107,71 @@ function IntentBadge({ intent, confidence }: { intent: string; confidence: numbe
   );
 }
 
+interface KnowledgeReference {
+  title?: string;
+  source?: string;
+  source_name?: string;
+  source_url?: string;
+  source_type?: string;
+  authority_level?: string;
+  review_status?: string;
+  license?: string;
+}
+
+function sourceKindLabel(ref: KnowledgeReference): string {
+  if (ref.source === "user_upload" || ref.source_type === "user_upload") return "用户资料";
+  if (ref.authority_level === "official") return "官方来源";
+  if (ref.authority_level === "open_textbook") return "开放教材";
+  if (ref.authority_level === "curated_seed") return "系统知识库";
+  return "知识来源";
+}
+
+function reviewLabel(status?: string): string {
+  if (status === "approved" || status === "reviewed") return "已审核";
+  if (status === "user_owned") return "用户资料";
+  return status || "";
+}
+
+function referenceTitle(ref: KnowledgeReference, index: number): string {
+  return ref.title || ref.source_name || ref.source || `参考 ${index + 1}`;
+}
+
+function ReferenceSourceList({ refs }: { refs: KnowledgeReference[] }) {
+  if (!refs.length) return null;
+  return (
+    <div className="chat-refs">
+      {refs.map((ref, i) => {
+        const title = referenceTitle(ref, i);
+        const detail = [ref.source_name, sourceKindLabel(ref), reviewLabel(ref.review_status)]
+          .filter(Boolean)
+          .join(" · ");
+        const content = (
+          <>
+            <span className="chat-ref-title">{title}</span>
+            {detail && <span className="chat-ref-detail">{detail}</span>}
+          </>
+        );
+        return ref.source_url ? (
+          <a
+            key={`${ref.source_url}-${i}`}
+            className="chat-ref-tag"
+            href={ref.source_url}
+            target="_blank"
+            rel="noreferrer"
+            title={detail || title}
+          >
+            {content}
+          </a>
+        ) : (
+          <span key={`${title}-${i}`} className="chat-ref-tag" title={detail || title}>
+            {content}
+          </span>
+        );
+      })}
+    </div>
+  );
+}
+
 function IntentResultView({ intentResult, onQuizComplete, onAction }: { intentResult: IntentResult; onQuizComplete?: (result: IntentResult) => void; onAction?: (action: string, payload?: string) => void }) {
   const { intent, confidence, result } = intentResult;
 
@@ -147,7 +212,7 @@ function IntentResultView({ intentResult, onQuizComplete, onAction }: { intentRe
   if (intent === "tutoring") {
     const answer = (result.answer as string) || "";
     const markdown = (result.markdown as string) || answer;
-    const refs = (result.rag_references as Array<{ title?: string; source?: string }>) || [];
+    const refs = (result.rag_references as KnowledgeReference[]) || [];
     const nextStep = result.next_step as string | undefined;
     const rec = result.resource_recommendation as { knowledge_point?: string; recommended_types?: string[]; reason?: string; decision?: string } | undefined;
     const showRec = rec && rec.recommended_types && rec.recommended_types.length > 0 && rec.decision !== "silent";
@@ -157,13 +222,7 @@ function IntentResultView({ intentResult, onQuizComplete, onAction }: { intentRe
         <div className="chat-content chat-tutor-answer">
           <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeSanitize]}>{markdown}</ReactMarkdown>
         </div>
-        {refs.length > 0 && (
-          <div className="chat-refs">
-            {refs.map((r, i) => (
-              <span key={i} className="chat-ref-tag">{r.title || r.source || `参考${i + 1}`}</span>
-            ))}
-          </div>
-        )}
+        <ReferenceSourceList refs={refs} />
         {nextStep && <div className="chat-next-step">建议：{nextStep}</div>}
         {showRec && (
           <div className={`chat-resource-recommend ${rec.decision === "ask" ? "ask-mode" : ""}`}>

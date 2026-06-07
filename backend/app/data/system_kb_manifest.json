@@ -1,0 +1,108 @@
+{
+  "version": "2026-06-07",
+  "description": "Governed source manifest for AutoLearning system knowledge base.",
+  "policy": {
+    "ingestion_scope": "Only whitelisted, license-reviewed, traceable sources can be imported into the system knowledge base.",
+    "separation": "System knowledge, user uploads, and generated resources must remain separately labelled.",
+    "generated_content_rule": "LLM-generated content cannot enter the system knowledge base without human review and source attribution."
+  },
+  "default_chunk_metadata": {
+    "source_name": "AutoLearning Maintained Seed Knowledge",
+    "source_url": "https://github.com/LGY4/AutoLearning",
+    "source_type": "curated_seed",
+    "license": "Project repository license",
+    "version": "seed-2026-06-07",
+    "retrieved_at": "2026-06-07",
+    "authority_level": "curated_seed",
+    "review_status": "approved",
+    "reviewer": "AutoLearning maintainers",
+    "language": "zh-CN",
+    "audience": "learner",
+    "difficulty": "mixed"
+  },
+  "allowed_sources": [
+    {
+      "source_name": "AutoLearning Maintained Seed Knowledge",
+      "source_type": "curated_seed",
+      "url_prefixes": ["https://github.com/LGY4/AutoLearning"],
+      "license": "Project repository license",
+      "authority_level": "curated_seed",
+      "update_frequency": "manual"
+    },
+    {
+      "source_name": "Python Documentation",
+      "source_type": "official_documentation",
+      "url_prefixes": ["https://docs.python.org/"],
+      "license": "Python Software Foundation License",
+      "authority_level": "official",
+      "update_frequency": "quarterly"
+    },
+    {
+      "source_name": "MDN Web Docs",
+      "source_type": "official_documentation",
+      "url_prefixes": ["https://developer.mozilla.org/"],
+      "license": "CC-BY-SA-2.5",
+      "authority_level": "official",
+      "update_frequency": "quarterly"
+    },
+    {
+      "source_name": "React Documentation",
+      "source_type": "official_documentation",
+      "url_prefixes": ["https://react.dev/"],
+      "license": "MIT",
+      "authority_level": "official",
+      "update_frequency": "quarterly"
+    },
+    {
+      "source_name": "FastAPI Documentation",
+      "source_type": "official_documentation",
+      "url_prefixes": ["https://fastapi.tiangolo.com/"],
+      "license": "MIT",
+      "authority_level": "official",
+      "update_frequency": "quarterly"
+    },
+    {
+      "source_name": "LangGraph",
+      "source_type": "official_repository",
+      "url_prefixes": ["https://github.com/langchain-ai/langgraph"],
+      "license": "MIT",
+      "authority_level": "official",
+      "update_frequency": "quarterly"
+    },
+    {
+      "source_name": "Vite Documentation",
+      "source_type": "official_documentation",
+      "url_prefixes": ["https://vite.dev/"],
+      "license": "MIT",
+      "authority_level": "official",
+      "update_frequency": "quarterly"
+    },
+    {
+      "source_name": "OpenStax",
+      "source_type": "open_textbook",
+      "url_prefixes": ["https://openstax.org/"],
+      "license": "CC-BY",
+      "authority_level": "open_textbook",
+      "update_frequency": "annual"
+    }
+  ],
+  "required_chunk_fields": [
+    "chunk_id",
+    "title",
+    "subject",
+    "content",
+    "tags",
+    "source_name",
+    "source_url",
+    "source_type",
+    "license",
+    "version",
+    "retrieved_at",
+    "content_hash",
+    "authority_level",
+    "review_status",
+    "language"
+  ],
+  "allowed_review_statuses": ["approved", "reviewed"],
+  "allowed_authority_levels": ["official", "open_textbook", "curated_seed"]
+}

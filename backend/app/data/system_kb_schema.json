@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/LGY4/AutoLearning/blob/main/backend/app/data/system_kb_schema.json",
+  "title": "AutoLearning Governed System Knowledge Base",
+  "version": "2026-06-07",
+  "description": "Schema contract for governed system knowledge chunks and their source manifest.",
+  "$defs": {
+    "chunk": {
+      "type": "object",
+      "required": [
+        "chunk_id",
+        "title",
+        "subject",
+        "content",
+        "tags",
+        "source_name",
+        "source_url",
+        "source_type",
+        "license",
+        "version",
+        "retrieved_at",
+        "content_hash",
+        "authority_level",
+        "review_status",
+        "language"
+      ],
+      "properties": {
+        "chunk_id": { "type": "string", "minLength": 1 },
+        "title": { "type": "string", "minLength": 1 },
+        "subject": { "type": "string", "minLength": 1 },
+        "content": { "type": "string", "minLength": 1 },
+        "tags": {
+          "type": "array",
+          "items": { "type": "string" }
+        },
+        "source_name": { "type": "string", "minLength": 1 },
+        "source_url": { "type": "string", "format": "uri" },
+        "source_type": { "type": "string", "minLength": 1 },
+        "license": { "type": "string", "minLength": 1 },
+        "version": { "type": "string", "minLength": 1 },
+        "retrieved_at": { "type": "string", "minLength": 1 },
+        "content_hash": {
+          "type": "string",
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "authority_level": { "type": "string", "minLength": 1 },
+        "review_status": { "type": "string", "minLength": 1 },
+        "reviewer": { "type": "string" },
+        "language": { "type": "string", "minLength": 1 },
+        "audience": { "type": "string" },
+        "difficulty": { "type": "string" }
+      },
+      "additionalProperties": true
+    },
+    "manifest": {
+      "type": "object",
+      "required": [
+        "version",
+        "description",
+        "policy",
+        "default_chunk_metadata",
+        "allowed_sources",
+        "required_chunk_fields",
+        "allowed_review_statuses",
+        "allowed_authority_levels"
+      ]
+    }
+  }
+}

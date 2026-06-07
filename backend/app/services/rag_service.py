@@ -23,6 +23,19 @@ class KnowledgeChunk:
     subject: str
     content: str
     tags: tuple[str, ...]
+    source_name: str = "AutoLearning Maintained Seed Knowledge"
+    source_url: str = "https://github.com/LGY4/AutoLearning"
+    source_type: str = "curated_seed"
+    license: str = "Project repository license"
+    version: str = "seed-2026-06-07"
+    retrieved_at: str = "2026-06-07"
+    content_hash: str = ""
+    authority_level: str = "curated_seed"
+    review_status: str = "approved"
+    reviewer: str = "AutoLearning maintainers"
+    language: str = "zh-CN"
+    audience: str = "learner"
+    difficulty: str = "mixed"
 
 
 DEFAULT_KNOWLEDGE_BASE: tuple[KnowledgeChunk, ...] = (
@@ -54,6 +67,89 @@ def _knowledge_file() -> Path:
     return Path(__file__).resolve().parents[1] / "data" / "knowledge_base.json"
 
 
+def _knowledge_manifest_file() -> Path:
+    return Path(__file__).resolve().parents[1] / "data" / "system_kb_manifest.json"
+
+
+@lru_cache(maxsize=1)
+def load_knowledge_manifest() -> dict:
+    path = _knowledge_manifest_file()
+    if not path.exists():
+        return {}
+    return json.loads(path.read_text(encoding="utf-8"))
+
+
+def _default_chunk_metadata() -> dict:
+    return load_knowledge_manifest().get("default_chunk_metadata", {})
+
+
+def _content_hash(content: str) -> str:
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
+
+
+def _build_chunk(row: dict) -> KnowledgeChunk:
+    defaults = _default_chunk_metadata()
+    content = str(row["content"])
+    return KnowledgeChunk(
+        chunk_id=str(row["chunk_id"]),
+        title=str(row["title"]),
+        subject=str(row["subject"]),
+        content=content,
+        tags=tuple(str(tag) for tag in row.get("tags", [])),
+        source_name=str(row.get("source_name") or defaults.get("source_name") or "AutoLearning Maintained Seed Knowledge"),
+        source_url=str(row.get("source_url") or defaults.get("source_url") or "https://github.com/LGY4/AutoLearning"),
+        source_type=str(row.get("source_type") or defaults.get("source_type") or "curated_seed"),
+        license=str(row.get("license") or defaults.get("license") or "Project repository license"),
+        version=str(row.get("version") or defaults.get("version") or "seed-2026-06-07"),
+        retrieved_at=str(row.get("retrieved_at") or defaults.get("retrieved_at") or "2026-06-07"),
+        content_hash=str(row.get("content_hash") or _content_hash(content)),
+        authority_level=str(row.get("authority_level") or defaults.get("authority_level") or "curated_seed"),
+        review_status=str(row.get("review_status") or defaults.get("review_status") or "approved"),
+        reviewer=str(row.get("reviewer") or defaults.get("reviewer") or "AutoLearning maintainers"),
+        language=str(row.get("language") or defaults.get("language") or "zh-CN"),
+        audience=str(row.get("audience") or defaults.get("audience") or "learner"),
+        difficulty=str(row.get("difficulty") or defaults.get("difficulty") or "mixed"),
+    )
+
+
+def _chunk_by_id() -> dict[str, KnowledgeChunk]:
+    return {chunk.chunk_id: chunk for chunk in load_knowledge_base()}
+
+
+def _chunk_provenance(chunk: KnowledgeChunk) -> dict:
+    return {
+        "source_name": chunk.source_name,
+        "source_url": chunk.source_url,
+        "source_type": chunk.source_type,
+        "license": chunk.license,
+        "version": chunk.version,
+        "retrieved_at": chunk.retrieved_at,
+        "content_hash": chunk.content_hash,
+        "authority_level": chunk.authority_level,
+        "review_status": chunk.review_status,
+        "reviewer": chunk.reviewer,
+        "language": chunk.language,
+        "audience": chunk.audience,
+        "difficulty": chunk.difficulty,
+    }
+
+
+def _chunk_result(chunk: KnowledgeChunk, score: float, retrieval_engine: str) -> dict:
+    provenance = _chunk_provenance(chunk)
+    return {
+        "chunk_id": chunk.chunk_id,
+        "title": chunk.title,
+        "content": chunk.content,
+        "subject": chunk.subject,
+        "score": round(score, 2),
+        "retrieval_engine": retrieval_engine,
+        "tags": list(chunk.tags),
+        "source": "system_knowledge",
+        **provenance,
+        "provenance": provenance,
+    }
+
+
 @lru_cache(maxsize=1)
 def load_knowledge_base() -> tuple[KnowledgeChunk, ...]:
     import logging
@@ -62,16 +158,7 @@ def load_knowledge_base() -> tuple[KnowledgeChunk, ...]:
         logging.getLogger(__name__).error("知识库文件缺失: %s — RAG 检索将不可用", path)
         return DEFAULT_KNOWLEDGE_BASE
     rows = json.loads(path.read_text(encoding="utf-8"))
-    return tuple(
-        KnowledgeChunk(
-            chunk_id=str(row["chunk_id"]),
-            title=str(row["title"]),
-            subject=str(row["subject"]),
-            content=str(row["content"]),
-            tags=tuple(str(tag) for tag in row.get("tags", [])),
-        )
-        for row in rows
-    )
+    return tuple(_build_chunk(row) for row in rows)
 
 
 def _score_chunk(chunk: KnowledgeChunk, query: str, subject: Optional[str]) -> float:
@@ -115,18 +202,7 @@ def _memory_search(query: str, subject: Optional[str], top_k: int) -> List[dict]
         key=lambda item: item[0],
         reverse=True,
     )
-    return [
-        {
-            "chunk_id": chunk.chunk_id,
-            "title": chunk.title,
-            "content": chunk.content,
-            "subject": chunk.subject,
-            "score": round(score, 2),
-            "retrieval_engine": "memory_fallback",
-            "tags": list(chunk.tags),
-        }
-        for score, chunk in scored[:top_k]
-    ]
+    return [_chunk_result(chunk, score, "memory_fallback") for score, chunk in scored[:top_k]]
 
 
 def _chunk_embedding_text(chunk: KnowledgeChunk) -> str:
@@ -222,6 +298,8 @@ def _get_chroma_collection():
                     "title": chunk.title,
                     "subject": chunk.subject,
                     "tags": ",".join(chunk.tags),
+                    "source": "system_knowledge",
+                    **_chunk_provenance(chunk),
                 }
                 for chunk in missing
             ],
@@ -249,14 +327,36 @@ def _chroma_search(query: str, subject: Optional[str], top_k: int) -> Optional[L
     distances = results.get("distances", [[]])[0] or [0.0] * len(ids)
 
     output: List[dict] = []
+    chunks_by_id = _chunk_by_id()
     for chunk_id, content, metadata, distance in zip(ids, docs, metadatas, distances):
         score = round(max(0.0, 1.0 - float(distance)), 2)
+        chunk = chunks_by_id.get(str(chunk_id))
         if subject:
             chunk_subject = metadata.get("subject", "")
             if chunk_subject == subject:
                 score = min(1.0, score + 0.15)
             elif subject in chunk_subject or chunk_subject in subject:
                 score = min(1.0, score + 0.08)
+        if chunk is not None:
+            result = _chunk_result(chunk, score, "chroma")
+            result["content"] = content
+            output.append(result)
+            continue
+        provenance = {
+            "source_name": metadata.get("source_name", ""),
+            "source_url": metadata.get("source_url", ""),
+            "source_type": metadata.get("source_type", ""),
+            "license": metadata.get("license", ""),
+            "version": metadata.get("version", ""),
+            "retrieved_at": metadata.get("retrieved_at", ""),
+            "content_hash": metadata.get("content_hash", _content_hash(content or "")),
+            "authority_level": metadata.get("authority_level", ""),
+            "review_status": metadata.get("review_status", ""),
+            "reviewer": metadata.get("reviewer", ""),
+            "language": metadata.get("language", ""),
+            "audience": metadata.get("audience", ""),
+            "difficulty": metadata.get("difficulty", ""),
+        }
         output.append(
             {
                 "chunk_id": chunk_id,
@@ -266,6 +366,9 @@ def _chroma_search(query: str, subject: Optional[str], top_k: int) -> Optional[L
                 "score": score,
                 "retrieval_engine": "chroma",
                 "tags": str(metadata.get("tags", "")).split(",") if metadata.get("tags") else [],
+                "source": metadata.get("source", "system_knowledge"),
+                **provenance,
+                "provenance": provenance,
             }
         )
     output.sort(key=lambda x: x["score"], reverse=True)
@@ -278,6 +381,7 @@ def rebuild_knowledge_index(force: bool = False) -> dict:
     settings = get_settings()
     # Clear the knowledge base cache to reload from file
     load_knowledge_base.cache_clear()
+    load_knowledge_manifest.cache_clear()
     chunks = load_knowledge_base()
     embedding_status = embedding_service.get_embedding_status()
     if settings.rag_backend == "memory":
@@ -318,8 +422,14 @@ def knowledge_status() -> dict:
     status = {
         "configured_backend": settings.rag_backend,
         "knowledge_file": str(_knowledge_file()),
+        "manifest_file": str(_knowledge_manifest_file()),
         "source_chunks": len(chunks),
         "subjects": sorted({chunk.subject for chunk in chunks}),
+        "governance": {
+            "sources": sorted({chunk.source_name for chunk in chunks}),
+            "review_statuses": sorted({chunk.review_status for chunk in chunks}),
+            "authority_levels": sorted({chunk.authority_level for chunk in chunks}),
+        },
         "embedding": embedding_service.get_embedding_status(),
     }
     try:
@@ -471,15 +581,7 @@ def _bm25_search(query: str, subject: Optional[str], top_k: int) -> List[dict]:
     max_score = scored[0][0] if scored else 1.0
 
     return [
-        {
-            "chunk_id": chunk.chunk_id,
-            "title": chunk.title,
-            "content": chunk.content,
-            "subject": chunk.subject,
-            "score": round(min(0.99, score / max_score * 0.95), 2),
-            "retrieval_engine": "bm25",
-            "tags": list(chunk.tags),
-        }
+        _chunk_result(chunk, min(0.99, score / max_score * 0.95), "bm25")
         for score, chunk in scored[:top_k]
     ]
 
@@ -601,20 +703,9 @@ def search_knowledge_with_graph(query: str, subject: Optional[str] = None, top_k
         seen_node_ids.add(node["id"])
         for sibling_cid in node.get("chunk_ids", []):
             if sibling_cid not in initial_ids:
-                # Look up the chunk content from the knowledge base
-                chunks = load_knowledge_base()
-                for chunk in chunks:
-                    if chunk.chunk_id == sibling_cid:
-                        expanded.append({
-                            "chunk_id": sibling_cid,
-                            "title": chunk.title,
-                            "content": chunk.content,
-                            "subject": chunk.subject,
-                            "score": round(result["score"] * 0.7, 2),
-                            "retrieval_engine": "graph_expand",
-                            "tags": list(chunk.tags),
-                        })
-                        break
+                chunk = _chunk_by_id().get(sibling_cid)
+                if chunk:
+                    expanded.append(_chunk_result(chunk, result["score"] * 0.7, "graph_expand"))
 
     # Merge, deduplicate, cap
     combined = initial + expanded

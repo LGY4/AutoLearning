@@ -1,5 +1,7 @@
 from pathlib import Path
 
+from validate_knowledge_base import validate_knowledge_base
+
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -23,6 +25,8 @@ REQUIRED_PATHS = [
     "backend/app/ops/check_spark.py",
     "backend/app/api/v1/system.py",
     "backend/app/data/knowledge_base.json",
+    "backend/app/data/system_kb_schema.json",
+    "backend/app/data/system_kb_manifest.json",
     "backend/app/data/prompt_templates.json",
     "frontend/src/components/resource/ResourceRenderer.tsx",
     "backend/alembic.ini",
@@ -38,6 +42,7 @@ REQUIRED_PATHS = [
     "docs/DEVELOPMENT.md",
     "docs/FLOW_STAGE_VERIFICATION.md",
     "scripts/verify_runtime.py",
+    "scripts/validate_knowledge_base.py",
     "scripts/compose_integration.py",
     "scripts/compose_integration.cmd",
     "scripts/docker_up.cmd",
@@ -79,6 +84,9 @@ REQUIRED_TOKENS = {
     "backend/app/workflows/learning_graph.py": ["StateGraph", "START", "END", "build_learning_graph"],
     "backend/app/repositories/vertical_loop_repository.py": ["PostgresVerticalLoopRepository", "AutoSwitchRepository", "SessionLocal"],
     "backend/app/services/rag_service.py": ["PersistentClient", "memory_fallback", "chroma", "EmbeddingIndex", "knowledge_base.json", "embedding_service"],
+    "backend/app/data/system_kb_schema.json": ["$defs", "chunk", "manifest", "content_hash"],
+    "backend/app/data/system_kb_manifest.json": ["allowed_sources", "default_chunk_metadata", "required_chunk_fields"],
+    "scripts/validate_knowledge_base.py": ["validate_knowledge_base", "content_hash", "allowed_review_statuses"],
     "backend/app/services/embedding_service.py": ["EMBEDDING_API_URL", "deterministic_fallback", "embed_text"],
     "backend/app/services/model_gateway.py": ["websocket", "_call_spark", "hmac-sha256", "generate_json", "ValidationError"],
     "backend/app/ops/start_api.py": ["bootstrap_application", "uvicorn.run"],
@@ -170,6 +178,10 @@ def main() -> None:
 
     if forbidden_hits:
         raise SystemExit("\n".join(forbidden_hits))
+
+    knowledge_failures = validate_knowledge_base()
+    if knowledge_failures:
+        raise SystemExit("\n".join(knowledge_failures))
 
     print("Baseline validation passed.")
 

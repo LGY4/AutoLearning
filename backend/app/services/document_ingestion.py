@@ -186,6 +186,23 @@ def search_user_knowledge(
         output = []
         for chunk_id, content, metadata, distance in zip(ids, docs, metadatas, distances):
             score = round(max(0.0, 1.0 - float(distance)), 2)
+            content_hash = hashlib.sha256((content or "").encode("utf-8")).hexdigest()
+            source = metadata.get("source", "user_upload")
+            provenance = {
+                "source_name": metadata.get("title", "") or "User uploaded document",
+                "source_url": "",
+                "source_type": "user_upload",
+                "license": "user_provided",
+                "version": "",
+                "retrieved_at": "",
+                "content_hash": content_hash,
+                "authority_level": "user_provided",
+                "review_status": "user_owned",
+                "reviewer": "",
+                "language": "",
+                "audience": "",
+                "difficulty": "",
+            }
             output.append({
                 "chunk_id": chunk_id,
                 "title": metadata.get("title", ""),
@@ -194,7 +211,9 @@ def search_user_knowledge(
                 "score": score,
                 "retrieval_engine": "user_chroma",
                 "tags": str(metadata.get("tags", "")).split(",") if metadata.get("tags") else [],
-                "source": metadata.get("source", "user_upload"),
+                "source": source,
+                **provenance,
+                "provenance": provenance,
             })
 
         output.sort(key=lambda x: x["score"], reverse=True)

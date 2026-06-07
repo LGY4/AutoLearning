@@ -14,9 +14,19 @@ export interface ResourceLearningSummary {
   qualityPercent: number | null;
   methodLabels: string[];
   sourceTitles: string[];
+  sources: ResourceSourceSummary[];
   chatPrompt: string;
   practicePath: string;
   mapPath: string;
+}
+
+export interface ResourceSourceSummary {
+  title: string;
+  sourceName: string;
+  sourceUrl: string;
+  sourceType: string;
+  authorityLevel: string;
+  reviewStatus: string;
 }
 
 const TYPE_LABELS: Record<string, string> = {
@@ -63,11 +73,57 @@ function referenceTitle(reference: unknown): string {
   if (typeof reference === "string") return reference;
   if (!reference || typeof reference !== "object") return "";
   const item = reference as Record<string, unknown>;
-  return firstText(item.title, item.name, item.source, item.url);
+  return firstText(item.title, item.name, item.source_name, item.source, item.url);
+}
+
+function sourceSummary(reference: unknown): ResourceSourceSummary | null {
+  if (typeof reference === "string") {
+    return reference.trim()
+      ? { title: reference.trim(), sourceName: "", sourceUrl: "", sourceType: "", authorityLevel: "", reviewStatus: "" }
+      : null;
+  }
+  if (!reference || typeof reference !== "object") return null;
+  const item = reference as Record<string, unknown>;
+  const title = referenceTitle(item);
+  if (!title) return null;
+  return {
+    title,
+    sourceName: firstText(item.source_name, item.source),
+    sourceUrl: firstText(item.source_url, item.url),
+    sourceType: firstText(item.source_type),
+    authorityLevel: firstText(item.authority_level),
+    reviewStatus: firstText(item.review_status),
+  };
+}
+
+function sourceLabel(source: ResourceSourceSummary): string {
+  if (source.sourceType === "user_upload") return "用户资料";
+  if (source.authorityLevel === "official") return "官方来源";
+  if (source.authorityLevel === "open_textbook") return "开放教材";
+  if (source.authorityLevel === "curated_seed") return "系统知识库";
+  return source.sourceName || "";
+}
+
+function reviewLabel(status: string): string {
+  if (status === "approved" || status === "reviewed") return "已审核";
+  if (status === "user_owned") return "用户资料";
+  return status;
+}
+
+function sourceDisplayTitle(source: ResourceSourceSummary): string {
+  return unique([source.title, source.sourceName, sourceLabel(source), reviewLabel(source.reviewStatus)]).join(" · ");
 }
 
 function readReferences(metadata: Record<string, unknown> | undefined): string[] {
   if (!metadata) return [];
+
+  const ragSourceTitles = Array.isArray(metadata.rag_sources)
+    ? metadata.rag_sources
+        .map(sourceSummary)
+        .filter((item): item is ResourceSourceSummary => item !== null)
+        .map(sourceDisplayTitle)
+    : [];
+  if (ragSourceTitles.length > 0) return unique(ragSourceTitles).slice(0, 3);
 
   const ragTitles = Array.isArray(metadata.rag_titles)
     ? metadata.rag_titles.map(referenceTitle)
@@ -81,6 +137,22 @@ function readReferences(metadata: Record<string, unknown> | undefined): string[]
     : [];
 
   return unique([...ragTitles, ...draftReferences]).slice(0, 3);
+}
+
+function readSourceSummaries(metadata: Record<string, unknown> | undefined): ResourceSourceSummary[] {
+  if (!metadata) return [];
+  const ragSources = Array.isArray(metadata.rag_sources)
+    ? metadata.rag_sources.map(sourceSummary).filter((item): item is ResourceSourceSummary => item !== null)
+    : [];
+  if (ragSources.length > 0) return ragSources.slice(0, 3);
+  return readReferences(metadata).map((title) => ({
+    title,
+    sourceName: "",
+    sourceUrl: "",
+    sourceType: "",
+    authorityLevel: "",
+    reviewStatus: "",
+  }));
 }
 
 function readMethodLabels(metadata: Record<string, unknown> | undefined): string[] {
@@ -113,6 +185,7 @@ export function buildResourceLearningSummary(resource: ResourceActionInput): Res
     qualityPercent: normalizeQuality(resource.quality_score),
     methodLabels: readMethodLabels(resource.metadata),
     sourceTitles: readReferences(resource.metadata),
+    sources: readSourceSummaries(resource.metadata),
     chatPrompt: `围绕「${topic}」继续讲解，并结合刚才的${typeLabel}给出下一步学习重点。`,
     practicePath: topicPath("/practice", "knowledge_point", topic),
     mapPath: "/map",

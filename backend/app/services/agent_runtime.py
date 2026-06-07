@@ -450,6 +450,25 @@ def _rag_context(knowledge_point: str, subject: str) -> List[dict]:
 # ── Resource generation ────────────────────────────────────────────────────
 
 
+def _rag_sources(rag_hits: List[dict]) -> List[dict]:
+    sources: List[dict] = []
+    for item in rag_hits:
+        sources.append({
+            "chunk_id": item.get("chunk_id", ""),
+            "title": item.get("title", ""),
+            "source": item.get("source", ""),
+            "source_name": item.get("source_name", ""),
+            "source_url": item.get("source_url", ""),
+            "source_type": item.get("source_type", ""),
+            "license": item.get("license", ""),
+            "authority_level": item.get("authority_level", ""),
+            "review_status": item.get("review_status", ""),
+            "retrieval_engine": item.get("retrieval_engine", ""),
+            "score": item.get("score", 0),
+        })
+    return sources
+
+
 def build_learning_resource(
     user_id: UUID,
     subject: str,
@@ -467,6 +486,7 @@ def build_learning_resource(
         "profile_basis": _profile_summary(profile),
         "rag_basis": [item.get("chunk_id", "") for item in rag_hits],
         "rag_titles": rag_titles,
+        "rag_sources": _rag_sources(rag_hits),
         "subject": subject,
         "knowledge_point": knowledge_point,
     }
