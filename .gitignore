@@ -66,3 +66,7 @@ backend/_debug_script.txt
 backend/_error.txt
 backend/_test/
 *.docx
+!docs/generated/*.docx
+
+# External reference snapshots used during analysis
+_analysis/
