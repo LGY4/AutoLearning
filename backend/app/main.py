@@ -127,18 +127,22 @@ def readiness_check() -> Dict[str, object]:
         checks["postgres"] = "error" if settings.environment == "production" else f"error: {exc}"
         overall = "degraded"
 
-    # Check Redis
+    # Redis is required for the full Postgres/Celery deployment. In memory mode,
+    # resource generation falls back to an in-process background worker.
+    redis_required = settings.repository_backend == "postgres"
     try:
         import redis as redis_lib
         r = redis_lib.from_url(settings.redis_url, socket_timeout=2)
         r.ping()
         checks["redis"] = "ok"
     except Exception as exc:
-        checks["redis"] = "error" if settings.environment == "production" else f"error: {exc}"
-        overall = "degraded"
+        if redis_required:
+            checks["redis"] = "error" if settings.environment == "production" else f"error: {exc}"
+            overall = "degraded"
+        else:
+            checks["redis"] = "skipped (memory backend; local fallback active)"
 
     status_code = 200 if overall == "ok" else 503
-    from fastapi import Response
     return JSONResponse(
         status_code=status_code,
         content={"status": overall, "checks": checks},
